@@ -1,0 +1,26 @@
+# Entornos virtuales y dependencias
+venv/
+.venv/
+env/
+
+# Archivos de variables de entorno
+.env
+
+# Archivos compilados de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Paquetes de distribución
+build/
+dist/
+*.egg-info/
+
+# Archivos de IDEs y editores
+.vscode/
+.idea/
+
+# Logs y bases de datos locales
+*.log
+*.sqlite3
