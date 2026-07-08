@@ -21,7 +21,7 @@ class MedicamentoNormalizer:
         
         try:
             message = self.client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model="claude-haiku-4-5",
                 max_tokens=300,
                 system="""Eres un asistente experto en medicamentos en México. 
                 Da una descripción breve. Tu respuesta DEBE ser únicamente un 
