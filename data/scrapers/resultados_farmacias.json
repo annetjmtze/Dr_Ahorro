@@ -4,11 +4,11 @@
     "nombre_en_farmacia": "Paracetamol 500 mg Oral 20 tabletas Marca del Ahorro",
     "farmacia": "Farmacias del Ahorro",
     "precio": 31.0,
-    "precio_promo": null,
+    "precio_promo": 1124.22,
     "vigencia_promo": null,
     "url_producto": "https://www.fahorro.com/paracetamol-500-mg-oral-20-tabletas-marca-del-ahorro.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-07T21:17:36.992526"
+    "fecha_consulta": "2026-07-09T15:35:09.090872"
   },
   {
     "medicamento_buscado": "paracetamol",
@@ -19,7 +19,7 @@
     "vigencia_promo": null,
     "url_producto": "https://www.benavides.com.mx/perfalgan-paracetamol-1-ud-frasco-ampula",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-07T21:17:40.289222"
+    "fecha_consulta": "2026-07-09T15:35:12.526872"
   },
   {
     "medicamento_buscado": "paracetamol",
@@ -30,10 +30,10 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/paracetamol-500mg-10-tabletas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-07T21:17:40.809482"
+    "fecha_consulta": "2026-07-09T15:35:13.088094"
   },
   {
-    "medicamento_buscado": "paracetamol",
+    "medicamento_buscado": "ibuprofeno",
     "nombre_en_farmacia": "IBUPROFENO 800 MG 10 TABLETAS",
     "farmacia": "Probemedic",
     "precio": 48.0,
@@ -41,10 +41,10 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/ibuprofeno-800-mg-10-tabletas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-07T21:17:41.302844"
+    "fecha_consulta": "2026-07-09T15:35:13.620399"
   },
   {
-    "medicamento_buscado": "paracetamol",
+    "medicamento_buscado": "fluoxetina",
     "nombre_en_farmacia": "FLUOXETINA 20 MG 14 CAPSULAS",
     "farmacia": "Probemedic",
     "precio": 25.92,
@@ -52,10 +52,10 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/fluoxetina-20-mg-14-capsulas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-07T21:17:41.832727"
+    "fecha_consulta": "2026-07-09T15:35:14.165270"
   },
   {
-    "medicamento_buscado": "paracetamol",
+    "medicamento_buscado": "diclofenaco",
     "nombre_en_farmacia": "DICLOFENACO 100 MG 20 TABLETAS",
     "farmacia": "Probemedic",
     "precio": 43.0,
@@ -63,6 +63,39 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/diclofenaco-100-mg-20-tabletas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-07T21:17:42.326478"
+    "fecha_consulta": "2026-07-09T15:35:14.686304"
+  },
+  {
+    "medicamento_buscado": "desconocido",
+    "nombre_en_farmacia": "LORATADINA 10 MG 10 TABLETAS",
+    "farmacia": "Probemedic",
+    "precio": 17.02,
+    "precio_promo": null,
+    "vigencia_promo": null,
+    "url_producto": "https://www.probemedic.mx/loratadina-10-mg-10-tabletas.html",
+    "fuente": "scraper_web",
+    "fecha_consulta": "2026-07-09T15:35:17.257619"
+  },
+  {
+    "medicamento_buscado": "desconocido",
+    "nombre_en_farmacia": "METFORMINA 850 MG 30 TABLETAS",
+    "farmacia": "Probemedic",
+    "precio": 60.24,
+    "precio_promo": null,
+    "vigencia_promo": null,
+    "url_producto": "https://www.probemedic.mx/metformina-850-mg-30-tabletas.html",
+    "fuente": "scraper_web",
+    "fecha_consulta": "2026-07-09T15:35:17.799805"
+  },
+  {
+    "medicamento_buscado": "desconocido",
+    "nombre_en_farmacia": "CELECOXIB 200 MG 10 CAPSULAS",
+    "farmacia": "Probemedic",
+    "precio": 318.0,
+    "precio_promo": null,
+    "vigencia_promo": null,
+    "url_producto": "https://www.probemedic.mx/celecoxib-200-mg-10-capsulas.html",
+    "fuente": "scraper_web",
+    "fecha_consulta": "2026-07-09T15:35:18.340883"
   }
 ]

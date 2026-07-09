@@ -14,7 +14,8 @@
 - [⚙️ Instalación y Configuración](#️-instalación-y-configuración)
 - [🚀 Uso](#-uso)
 - [🌐 Web Scraping de Farmacias](#-web-scraping-de-farmacias)
-- [🔧 Variables de Entorno](#-variables-de-entorno)
+- [💾 Base de Datos de Historial de Precios](#-base-de-datos-de-historial-de-precios)
+- [ Variables de Entorno](#-variables-de-entorno)
 - [🧪 Posibles Errores y Soluciones](#-posibles-errores-y-soluciones)
 - [🚧 Mejoras Futuras](#-mejoras-futuras)
 - [🙏 Créditos](#-créditos)
@@ -32,6 +33,11 @@
 - ✅ Respuestas adaptadas al formato de cada plataforma.
 - ✅ Fácil de extender a nuevos canales como Discord o Messenger.
 - ✅ Registro automático del webhook de WhatsApp.
+- ✅ Detecta automáticamente si una farmacia publica precios en HTML estático o requiere contenido dinámico.
+- ✅ Implementa una estrategia híbrida de obtención de precios:
+- Web Scraping para sitios con precios públicos.
+- OCR para extraer precios desde imágenes cuando el HTML no los contiene.
+- ✅ Documenta automáticamente los hallazgos técnicos de cada farmacia evaluada.
 
 ---
 
@@ -39,7 +45,7 @@
 
 | Tecnología | Uso |
 |------------|-----|
-| Python 3.14+ | Lenguaje principal |
+| Python 3.10+ | Lenguaje principal |
 | Flask | Webhook para WhatsApp |
 | Twilio API | Integración con WhatsApp |
 | python-telegram-bot | Bot de Telegram |
@@ -48,6 +54,7 @@
 | BeautifulSoup4 | Extracción de información HTML |
 | lxml | Parser HTML |
 | python-dotenv | Variables de entorno |
+| SQLite | Base de datos para historial de precios |
 | ngrok | Exposición del servidor local |
 
 ---
@@ -55,29 +62,35 @@
 # 🧠 Arquitectura
 
 ```text
-                         Telegram
-                             │
-                             ▼
-                  ┌────────────────────┐
-                  │ Telegram Handler   │
-                  └─────────┬──────────┘
-                            │
-                            ▼
-                ┌────────────────────────┐
-                │ Claude (Anthropic LLM) │
-                │ Normalizador           │
-                └─────────┬──────────────┘
-                          │
-        ┌─────────────────┴──────────────────┐
-        │                                    │
-        ▼                                    ▼
- Web Scraper                         WhatsApp Handler
-(Requests + BS4)                            │
-        │                                   ▼
-        ▼                          Flask + Webhook
- resultados_farmacias.json                │
-                                          ▼
-                                      WhatsApp
+                     Telegram
+                         │
+                         ▼
+              ┌────────────────────┐
+              │ Telegram Handler   │
+              └─────────┬──────────┘
+                        │
+                        ▼
+            ┌────────────────────────┐
+            │ Claude (Anthropic LLM) │
+            │ Normalizador           │
+            └─────────┬──────────────┘
+                      │
+                      │◄────────────────────────────────────────┐
+          ┌───────────┴──────────────┐                          │
+          │                          │                          │
+          ▼                          ▼                          │
+   Web Scraping                 OCR                             │
+(Requests + BS4)        (Tesseract + Claude)                    │
+          │                          │                          │
+          └───────────┬──────────────┘                          │
+                      ▼                                         │
+            ┌──────────────────┐                                │
+            │   Base de Datos  │◄────────────────────────────────┘
+            │    (SQLite)      │
+            └──────────────────┘
+                      │
+                      ▼
+            WhatsApp / Telegram
 ```
 
 ### Principio de diseño
@@ -251,24 +264,77 @@ python main.py --channel all
 
 # 🌐 Web Scraping de Farmacias
 
-El proyecto incorpora un módulo de **Web Scraping** encargado de consultar precios públicos de medicamentos disponibles en farmacias mexicanas con sitios web.
+El proyecto incorpora un módulo de Web Scraping encargado de consultar precios públicos de medicamentos disponibles en farmacias mexicanas.
 
 ## Objetivo
 
-Obtener precios reales para complementar la información proporcionada por el bot.
+Obtener precios reales para complementar la información proporcionada por el bot utilizando únicamente información pública.
 
-## Tecnologías utilizadas
+---
+
+## Estrategia de obtención de precios
+
+El proyecto sigue una estrategia híbrida.
+
+### 1. Web Scraping
+
+Se consulta el HTML público del sitio web mediante:
 
 - Requests
 - BeautifulSoup4
 - Selectores CSS
-- HTML estático
+- Parser lxml
+
+Cuando el precio aparece directamente en el código fuente (Ctrl+U), puede extraerse mediante scraping tradicional.
+
+---
+
+### 2. OCR
+
+Muchas farmacias muestran el precio únicamente dentro de imágenes o contenido generado dinámicamente mediante JavaScript.
+
+En esos casos el proyecto utiliza OCR para extraer automáticamente el precio desde capturas de pantalla.
+
+Esta estrategia permite cubrir una mayor cantidad del mercado mexicano.
+
+---
+
+## Diagnóstico previo
+
+Antes de desarrollar un scraper se realiza un diagnóstico del sitio web.
+
+1. Abrir la página del medicamento.
+2. Presionar **Ctrl + U** para visualizar el código fuente.
+3. Buscar el precio.
+
+Si el precio aparece en el código fuente:
+
+✅ Se utiliza BeautifulSoup.
+
+Si el precio no aparece:
+
+➡️ Se documenta el caso para utilizar OCR.
+
+---
+
+## Cobertura
+
+Actualmente el proyecto considera dos grupos principales:
+
+- Farmacias con precios públicos accesibles mediante HTML.
+- Farmacias cuyos precios requieren OCR.
+
+La combinación de ambas técnicas permite ampliar significativamente la cobertura de medicamentos.
+
+---
 
 ## Ejecutar el scraper
 
 ```bash
 python data/scrapers/web_scraper.py
 ```
+
+---
 
 ## Resultado
 
@@ -278,36 +344,44 @@ Los datos obtenidos se almacenan automáticamente en:
 data/scrapers/resultados_farmacias.json
 ```
 
-Ejemplo de salida:
+Ejemplo:
 
 ```json
 {
-    "medicamento_buscado": "Paracetamol",
-    "nombre_encontrado": "Paracetamol 500 mg",
-    "farmacia": "Farmacia de ejemplo",
-    "precio": 49.50,
-    "precio_promedio": 38.00,
-    "vigencia_precio": "2026-07-15",
-    "url_producto": "https://...",
-    "fuente": "scrape_web",
-    "fecha_consulta": "2026-07-07T10:30:00"
+  "medicamento_buscado": "Paracetamol",
+  "nombre_encontrado": "Paracetamol 500 mg",
+  "farmacia": "Farmacia de ejemplo",
+  "precio": 49.50,
+  "precio_promedio": 38.00,
+  "vigencia_precio": "2026-07-15",
+  "url_producto": "https://...",
+  "fuente": "scrape_web",
+  "fecha_consulta": "2026-07-07T10:30:00"
 }
 ```
 
-Durante el desarrollo también se documentan observaciones técnicas en:
+---
+# 📄 Hallazgos Técnicos
+
+Durante el desarrollo se documentan las pruebas realizadas sobre diferentes farmacias mexicanas.
+
+Toda la información se registra en:
 
 ```text
 hallazgos_scraping.md
 ```
 
-En este archivo se registran:
+Cada análisis incluye:
 
-- Farmacias evaluadas.
-- Sitios compatibles con scraping.
-- Problemas encontrados.
-- Técnicas utilizadas.
-- Hallazgos durante la implementación.
-
+- Nombre de la farmacia.
+- URL analizada.
+- Disponibilidad del precio.
+- Resultado de Ctrl+U.
+- Si el sitio utiliza JavaScript.
+- Posibilidad de realizar Web Scraping.
+- Necesidad de OCR.
+- Observaciones técnicas.
+- Estado del scraper.
 ---
 
 # 🔧 Variables de Entorno
@@ -340,11 +414,12 @@ En este archivo se registran:
 # 🚧 Mejoras Futuras
 
 - Consultar múltiples farmacias automáticamente.
-- Implementar Selenium para sitios con JavaScript.
-- Integrar OCR para obtener precios desde imágenes.
-- Calcular el precio promedio entre diferentes farmacias.
-- Almacenar el historial de consultas.
-- Agregar una base de datos para persistencia de resultados.
+- Integrar Selenium para sitios con contenido dinámico.
+- Automatizar el flujo OCR para farmacias sin HTML público.
+- Detectar automáticamente cuándo utilizar Scraping u OCR.
+- Calcular precios promedio entre múltiples farmacias.
+- Implementar caché para reducir consultas repetidas.
+- Almacenar historial de búsquedas en una base de datos.
 - Exponer una API REST para consultar medicamentos y precios.
 
 ---

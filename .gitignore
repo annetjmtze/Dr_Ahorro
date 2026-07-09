@@ -11,3 +11,8 @@ __pycache__/
 
 # Entorno virtual de Python
 venv/
+
+# Archivos generados
+*.db
+*.db-journal
+data/scrapers/*.json

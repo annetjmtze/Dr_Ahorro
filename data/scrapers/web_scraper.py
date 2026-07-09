@@ -3,6 +3,12 @@ from bs4 import BeautifulSoup
 import json
 import re
 from datetime import datetime
+import sys
+import os
+
+# Añadir ruta para importar database.py desde data/
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from data.database import save_precio, init_db, contar_por_fuente
 
 # -------------------- FUNCIÓN AUXILIAR DE LIMPIEZA --------------------
 def limpiar_precio(texto):
@@ -14,6 +20,30 @@ def limpiar_precio(texto):
         return float(limpio)
     except ValueError:
         return None
+
+# -------------------- FUNCIÓN PARA GUARDAR EN BD --------------------
+def guardar_resultado(datos):
+    """
+    Guarda un resultado en la base de datos usando el schema definido.
+    datos: diccionario con los campos necesarios.
+    """
+    try:
+        registro = {
+            "medicamento": datos.get("medicamento_buscado", "desconocido"),
+            "nombre_raw": datos.get("nombre_en_farmacia"),
+            "farmacia": datos.get("farmacia"),
+            "ciudad": None,  # No tenemos ciudad en scraping
+            "precio": datos.get("precio"),
+            "precio_promo": datos.get("precio_promo"),
+            "vigencia": datos.get("vigencia_promo"),
+            "url": datos.get("url_producto"),
+            "fuente": "scraper_web",
+            "fecha": datos.get("fecha_consulta", datetime.now().isoformat())
+        }
+        save_precio(registro)
+        print(f"💾 Guardado en BD: {registro['farmacia']} - ${registro['precio']}")
+    except Exception as e:
+        print(f"⚠️ Error al guardar en BD: {e}")
 
 # -------------------- FARMACIAS DEL AHORRO --------------------
 def scrape_ahorro(url):
@@ -45,7 +75,7 @@ def scrape_ahorro(url):
             name_elem = soup.select_one('h1 span')
         nombre = name_elem.text.strip() if name_elem else "Paracetamol 500 mg"
 
-        return {
+        resultado = {
             "medicamento_buscado": "paracetamol",
             "nombre_en_farmacia": nombre,
             "farmacia": "Farmacias del Ahorro",
@@ -56,6 +86,12 @@ def scrape_ahorro(url):
             "fuente": "scraper_web",
             "fecha_consulta": datetime.now().isoformat()
         }
+
+        # Guardar en BD si hay precio
+        if precio is not None:
+            guardar_resultado(resultado)
+
+        return resultado
     except Exception as e:
         print(f"❌ Error en Farmacias del Ahorro: {e}")
         return None
@@ -104,7 +140,7 @@ def scrape_benavides(url):
             name_elem = soup.select_one('h1 span')
         nombre = name_elem.text.strip() if name_elem else "Perfalgan Paracetamol"
 
-        return {
+        resultado = {
             "medicamento_buscado": "paracetamol",
             "nombre_en_farmacia": nombre,
             "farmacia": "Farmacias Benavides",
@@ -115,6 +151,12 @@ def scrape_benavides(url):
             "fuente": "scraper_web",
             "fecha_consulta": datetime.now().isoformat()
         }
+
+        # Guardar en BD si hay precio
+        if precio is not None:
+            guardar_resultado(resultado)
+
+        return resultado
     except Exception as e:
         print(f"❌ Error en Farmacias Benavides: {e}")
         return None
@@ -138,8 +180,20 @@ def scrape_probemedic(url):
         title = soup.find('title')
         nombre = title.text.strip() if title else "Paracetamol 500mg 10 tabletas"
 
-        return {
-            "medicamento_buscado": "paracetamol",
+        # Inferir medicamento desde la URL o el nombre
+        if "paracetamol" in nombre.lower():
+            medicamento = "paracetamol"
+        elif "ibuprofeno" in nombre.lower():
+            medicamento = "ibuprofeno"
+        elif "fluoxetina" in nombre.lower():
+            medicamento = "fluoxetina"
+        elif "diclofenaco" in nombre.lower():
+            medicamento = "diclofenaco"
+        else:
+            medicamento = "desconocido"
+
+        resultado = {
+            "medicamento_buscado": medicamento,
             "nombre_en_farmacia": nombre,
             "farmacia": "Probemedic",
             "precio": precio,
@@ -149,18 +203,32 @@ def scrape_probemedic(url):
             "fuente": "scraper_web",
             "fecha_consulta": datetime.now().isoformat()
         }
+
+        # Guardar en BD si hay precio
+        if precio is not None:
+            guardar_resultado(resultado)
+
+        return resultado
     except Exception as e:
         print(f"❌ Error en Probemedic: {e}")
         return None
 
 # -------------------- EJECUCIÓN PRINCIPAL --------------------
 if __name__ == "__main__":
+    # Inicializar base de datos
+    init_db()
+    print("📦 Base de datos inicializada")
+
     # Productos de Probemedic (todos funcionan)
     urls_probemedic = [
         "https://www.probemedic.mx/paracetamol-500mg-10-tabletas.html",
         "https://www.probemedic.mx/ibuprofeno-800-mg-10-tabletas.html",
         "https://www.probemedic.mx/fluoxetina-20-mg-14-capsulas.html",
-        "https://www.probemedic.mx/diclofenaco-100-mg-20-tabletas.html"
+        "https://www.probemedic.mx/diclofenaco-100-mg-20-tabletas.html",
+        "https://www.probemedic.mx/omeprazol-20-mg-10-capsulas.html",
+        "https://www.probemedic.mx/loratadina-10-mg-10-tabletas.html",
+        "https://www.probemedic.mx/metformina-850-mg-30-tabletas.html",
+        "https://www.probemedic.mx/celecoxib-200-mg-10-capsulas.html"
     ]
 
     # Otras farmacias
@@ -172,32 +240,32 @@ if __name__ == "__main__":
     resultados = []
 
     # Scrapear Farmacias del Ahorro
-    print("🔍 Scrapeando Farmacias del Ahorro...")
+    print("\n🔍 Scrapeando Farmacias del Ahorro...")
     res_ahorro = scrape_ahorro(urls_otras["ahorro"])
     if res_ahorro:
         resultados.append(res_ahorro)
         print("✅ Farmacias del Ahorro OK")
 
     # Scrapear Farmacias Benavides
-    print("🔍 Scrapeando Farmacias Benavides...")
+    print("\n🔍 Scrapeando Farmacias Benavides...")
     res_benav = scrape_benavides(urls_otras["benavides"])
     if res_benav:
         resultados.append(res_benav)
         print("✅ Farmacias Benavides OK")
 
     # Scrapear todos los productos de Probemedic
+    print("\n🔍 Scrapeando Probemedic...")
     for url in urls_probemedic:
-        print(f"🔍 Scrapeando Probemedic: {url.split('/')[-1]}...")
+        print(f"  - {url.split('/')[-1]}...")
         res_prob = scrape_probemedic(url)
         if res_prob:
             resultados.append(res_prob)
-            print(f"✅ Probemedic OK: ${res_prob['precio']}")
+            print(f"    ✅ OK: ${res_prob['precio']}")
         else:
-            print(f"❌ Probemedic falló para {url}")
+            print(f"    ❌ Falló")
 
-    # Guardar resultados
+    # Guardar resultados en JSON (opcional, para compatibilidad)
     if resultados:
-        import os
         os.makedirs("data/scrapers", exist_ok=True)
         with open("data/scrapers/resultados_farmacias.json", "w", encoding="utf-8") as f:
             json.dump(resultados, f, indent=2, ensure_ascii=False)
@@ -207,3 +275,8 @@ if __name__ == "__main__":
             print(f"  - {r['farmacia']}: ${r['precio']} - {r['nombre_en_farmacia']}")
     else:
         print("❌ No se obtuvo ningún resultado.")
+
+    # Verificar registros en BD por fuente
+    print("\n📊 Registros en base de datos por fuente:")
+    for row in contar_por_fuente():
+        print(f"  {row['fuente']}: {row['total']}")
