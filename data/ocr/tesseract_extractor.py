@@ -1,6 +1,9 @@
 from PIL import Image, ImageEnhance
-import pytesseract  # <-- así se escribe
+import pytesseract
 import os
+
+# 🔥 Fuerza la ruta de Tesseract (por si no está en el PATH)
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 def preprocess(path):
     img = Image.open(path).convert('L')
@@ -13,7 +16,6 @@ def extract_text(path):
     return text.strip()
 
 if __name__ == "__main__":
-    # Cambia a una de tus imágenes reales
     test_image = "data/imagenes_prueba/farmacia_1.jpg"
     if os.path.exists(test_image):
         resultado = extract_text(test_image)

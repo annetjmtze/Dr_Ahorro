@@ -2,6 +2,12 @@ import os
 import base64
 import json
 from anthropic import Anthropic
+from dotenv import load_dotenv
+import os
+
+# Construye la ruta al .env desde la raíz del proyecto
+dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+load_dotenv(dotenv_path)
 
 # Carga tu API key desde variable de entorno
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -47,7 +53,7 @@ def extract_json_from_image(image_path):
     base64_image = encode_image_to_base64(image_path)
 
     response = client.messages.create(
-        model="claude-3-5-sonnet-20241022",  # o claude-3-opus-20240229
+        model="claude-haiku-4-5-20251001",  # o claude-3-opus-20240229
         max_tokens=1024,
         system=SYSTEM_PROMPT,
         messages=[
@@ -82,7 +88,7 @@ def extract_json_from_image(image_path):
 
 # Ejemplo de uso directo
 if __name__ == "__main__":
-    test_image = "data/imagenes_prueba/ejemplo.jpg"
+    test_image = "data/imagenes_prueba/farmacia_1.jpg"
     if os.path.exists(test_image):
         resultado = extract_json_from_image(test_image)
         print("=== JSON EXTRAÍDO POR CLAUDE VISION ===\n")
