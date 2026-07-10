@@ -438,13 +438,13 @@ Cada análisis incluye:
 
 ## Consulta con precios disponibles
 
-![Paracetamol](screenshots/paracetamol_whatsapp.jpg)
+![Paracetamol](screenshots/paracetamol_whatsapp.jpeg)
 
 ---
 
 ## Consulta sin precios disponibles
 
-![Ozempic](screenshots/ozempic_whatsapp.jpg)
+![Ozempic](screenshots/ozempic_whatsapp.jpeg)
 
 ---
 
