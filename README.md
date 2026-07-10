@@ -434,29 +434,6 @@ Cada análisis incluye:
 - Observaciones técnicas.
 - Estado del scraper.
 ---
-# 📷 Capturas de funcionamiento
-
-## Consulta con precios disponibles
-
-![Paracetamol](screenshots/paracetamol_whatsapp.jpeg)
-
----
-
-## Consulta sin precios disponibles
-
-![Ozempic](screenshots/ozempic_whatsapp.jpeg)
-
----
-
-## Validación con usuarios reales
-
-![Mounjaro](screenshots/mounjaro_whatsapp.jpeg)
-
-![Saridon](screenshots/saridon_whatsapp.jpeg)
-
-![Aspirina](screenshots/aspirina_whatsapp.jpeg)
-
----
 
 # 🔧 Variables de Entorno
 
