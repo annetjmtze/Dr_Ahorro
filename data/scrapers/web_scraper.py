@@ -225,7 +225,6 @@ if __name__ == "__main__":
         "https://www.probemedic.mx/ibuprofeno-800-mg-10-tabletas.html",
         "https://www.probemedic.mx/fluoxetina-20-mg-14-capsulas.html",
         "https://www.probemedic.mx/diclofenaco-100-mg-20-tabletas.html",
-        "https://www.probemedic.mx/omeprazol-20-mg-10-capsulas.html",
         "https://www.probemedic.mx/loratadina-10-mg-10-tabletas.html",
         "https://www.probemedic.mx/metformina-850-mg-30-tabletas.html",
         "https://www.probemedic.mx/celecoxib-200-mg-10-capsulas.html"
