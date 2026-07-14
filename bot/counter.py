@@ -4,8 +4,8 @@ import logging
 from datetime import datetime
 
 COUNTER_FILE = "daily_counter.json"
-LIMITE_DIARIO = 50              # Límite del sandbox de Twilio
-LIMITE_NOTIFICACION = int(LIMITE_DIARIO * 0.8)  # 80% = 40
+LIMITE_DIARIO = 10             # Límite del sandbox de Twilio
+LIMITE_NOTIFICACION = int(LIMITE_DIARIO * 0.8)  # 80% = 8
 
 def _get_today_str():
     return datetime.now().strftime("%Y-%m-%d")
