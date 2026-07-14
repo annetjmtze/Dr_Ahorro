@@ -14,6 +14,7 @@ from playwright.async_api import async_playwright
 import anthropic
 from dotenv import load_dotenv
 
+# ── Configurar entorno ──────────────────────────────────────────────
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT_DIR)
 from data.database import save_precio, init_db
@@ -67,7 +68,7 @@ FARMACIAS = [
             '.product-info-price .price',
             'span.price',
         ],
-        "result_container": None,  # usaremos página completa
+        "result_container": None,
         "fallback_url": "https://www.fahorro.com/paracetamol-500-mg-oral-20-tabletas-marca-del-ahorro.html",
     },
     {
@@ -161,6 +162,19 @@ async def tomar_screenshot(page, selector_contenedor: Optional[str] = None):
             logger.warning("No se encontró el contenedor, usando página completa")
     return await page.screenshot(full_page=False)
 
+def extraer_precio_regex(texto: str) -> Optional[float]:
+    patrones = [
+        r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2}))',
+        r'\$\s*(\d+(?:\.\d{2})?)',
+        r'(\d+\.\d{2})\s*\$',
+    ]
+    for patron in patrones:
+        match = re.search(patron, texto)
+        if match:
+            precio_str = match.group(1).replace(',', '')
+            return float(precio_str)
+    return None
+
 async def extraer_precio_directo(page, selectors: list) -> Optional[float]:
     """Intenta extraer el precio directamente del DOM usando selectores CSS."""
     for selector in selectors:
@@ -175,33 +189,32 @@ async def extraer_precio_directo(page, selectors: list) -> Optional[float]:
             continue
     return None
 
-def extraer_precio_regex(texto: str) -> Optional[float]:
-    patrones = [
-        r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2}))',
-        r'\$\s*(\d+(?:\.\d{2})?)',
-        r'(\d+\.\d{2})\s*\$',
-    ]
-    for patron in patrones:
-        match = re.search(patron, texto)
-        if match:
-            precio_str = match.group(1).replace(',', '')
-            return float(precio_str)
+def extraer_precio_desde_html(html: str) -> Optional[float]:
+    """Busca precios en JSON-LD o meta tags del HTML."""
+    # Patrón JSON-LD: "price": "23.00" o "price":23.00
+    match = re.search(r'"price"\s*:\s*"?([\d.]+)"?', html)
+    if match:
+        return float(match.group(1))
+    # Patrón meta property="product:price:amount" content="23.00"
+    match = re.search(r'property="product:price:amount"\s*content="([\d.]+)"', html)
+    if match:
+        return float(match.group(1))
+    # Patrón genérico: data-price-amount="23.00"
+    match = re.search(r'data-price-amount="([\d.]+)"', html)
+    if match:
+        return float(match.group(1))
     return None
 
 async def extraer_datos(page, image_bytes: bytes, farmacia_nombre: str, price_selectors: list) -> Dict[str, Any]:
     """
-    Extrae datos en orden de prioridad:
-    1. Extracción directa con selectores CSS (solo precio, el resto por Claude)
-    2. Claude Vision (imagen)
-    3. Regex sobre el texto visible
+    Híbrido: 1. Selectores CSS  2. Claude Vision  3. Regex  4. HTML crudo
     """
     datos = {}
-    precio_directo = await extraer_precio_directo(page, price_selectors)
-    if precio_directo:
-        logger.info(f"   Precio extraído directamente del DOM: ${precio_directo}")
-        datos["precio"] = str(precio_directo)
+    precio = await extraer_precio_directo(page, price_selectors)
+    if precio:
+        logger.info(f"   Precio extraído directamente del DOM: ${precio}")
     else:
-        # Intentar Claude
+        # Claude Vision
         base64_image = base64.b64encode(image_bytes).decode("utf-8")
         try:
             response = claude.messages.create(
@@ -227,32 +240,38 @@ async def extraer_datos(page, image_bytes: bytes, farmacia_nombre: str, price_se
             texto = response.content[0].text
             texto = texto.strip("`").replace("json\n", "").replace("\n`", "")
             datos = json.loads(texto)
+            precio_claude = datos.get("precio")
+            if precio_claude and precio_claude != "null":
+                if isinstance(precio_claude, str):
+                    precio = float(precio_claude.replace(",", "").strip())
+                else:
+                    precio = float(precio_claude)
         except Exception as e:
-            logger.error(f"Error en Claude Vision: {e}")
-            datos = {"error": str(e)}
+            logger.error(f"Error Claude: {e}")
 
-        # Si Claude no devolvió precio, regex
-        if not datos.get("precio") or datos.get("precio") == "null":
-            logger.info("   Claude no extrajo precio, intentando regex...")
-            try:
-                texto_pagina = await page.inner_text("body")
-                precio_regex = extraer_precio_regex(texto_pagina)
-                if precio_regex:
-                    datos["precio"] = str(precio_regex)
-                    logger.info(f"   Regex encontró precio: ${precio_regex}")
-            except Exception as e:
-                logger.warning(f"Error al extraer texto: {e}")
+    if not precio:
+        # Regex sobre texto visible
+        try:
+            texto_pagina = await page.inner_text("body")
+            precio = extraer_precio_regex(texto_pagina)
+            if precio:
+                logger.info(f"   Regex encontró precio: ${precio}")
+        except Exception as e:
+            logger.warning(f"Error regex: {e}")
 
-    # Nombre y farmacia
+    if not precio:
+        # HTML crudo (última oportunidad)
+        logger.info("   Intentando extraer precio desde HTML crudo (JSON-LD)...")
+        html = await page.content()
+        precio = extraer_precio_desde_html(html)
+        if precio:
+            logger.info(f"   Precio encontrado en HTML crudo: ${precio}")
+
+    datos["precio"] = str(precio) if precio else None
     if not datos.get("farmacia"):
         datos["farmacia"] = farmacia_nombre
     if not datos.get("medicamento"):
-        datos["medicamento"] = "paracetamol"  # asumimos el buscado
-
-    # Mantener el precio directo si ya lo teníamos
-    if precio_directo and not datos.get("precio"):
-        datos["precio"] = str(precio_directo)
-
+        datos["medicamento"] = "paracetamol"
     return datos
 
 async def guardar_en_db(datos: dict, fuente: str, imagen_url: str):
@@ -302,11 +321,13 @@ async def capturar_precio(farmacia: dict, medicamento: str, headless: bool = Tru
             if search_input:
                 await search_input.fill(medicamento)
                 await search_input.press("Enter")
-                # Esperar a que aparezca algo con $ o el primer selector de precio
-                try:
-                    await page.wait_for_selector(farmacia["price_selectors"][0], timeout=10000)
-                except Exception:
-                    logger.warning("No apareció el selector de precio esperado.")
+                # Esperar a que aparezca algún selector de precio
+                for sel in farmacia["price_selectors"]:
+                    try:
+                        await page.wait_for_selector(sel, timeout=5000)
+                        break
+                    except Exception:
+                        continue
                 await asyncio.sleep(1)
             else:
                 logger.info("   Usando URL de producto de respaldo...")
