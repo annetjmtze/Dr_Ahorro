@@ -119,7 +119,13 @@ def whatsapp_webhook():
         nombre_generico = resultado.get('nombre_generico', '').lower()
         nombre_ingresado = resultado.get('nombre_ingresado', incoming_msg)
 
+        # 1. Buscar con nombre genérico (lo que Claude devuelve)
         precios = get_resumen(nombre_generico)
+
+        # 2. Si no hay, intentar con el nombre que el usuario escribió
+        if not precios and nombre_ingresado:
+            logging.info(f"Fallback: buscando con nombre ingresado: {nombre_ingresado}")
+            precios = get_resumen(nombre_ingresado.lower())
 
         if precios:
             respuesta = f" *{nombre_generico.title()}*\n\n"

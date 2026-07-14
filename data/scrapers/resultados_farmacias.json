@@ -8,7 +8,7 @@
     "vigencia_promo": null,
     "url_producto": "https://www.fahorro.com/paracetamol-500-mg-oral-20-tabletas-marca-del-ahorro.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-13T12:42:18.129994"
+    "fecha_consulta": "2026-07-13T20:01:19.318347"
   },
   {
     "medicamento_buscado": "paracetamol",
@@ -19,7 +19,7 @@
     "vigencia_promo": null,
     "url_producto": "https://www.benavides.com.mx/perfalgan-paracetamol-1-ud-frasco-ampula",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-13T12:42:23.013837"
+    "fecha_consulta": "2026-07-13T20:01:22.822654"
   },
   {
     "medicamento_buscado": "paracetamol",
@@ -30,7 +30,7 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/paracetamol-500mg-10-tabletas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-13T12:42:23.816029"
+    "fecha_consulta": "2026-07-13T20:01:23.325536"
   },
   {
     "medicamento_buscado": "ibuprofeno",
@@ -41,7 +41,7 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/ibuprofeno-800-mg-10-tabletas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-13T12:42:24.645556"
+    "fecha_consulta": "2026-07-13T20:01:23.828975"
   },
   {
     "medicamento_buscado": "fluoxetina",
@@ -52,7 +52,7 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/fluoxetina-20-mg-14-capsulas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-13T12:42:25.474865"
+    "fecha_consulta": "2026-07-13T20:01:24.299284"
   },
   {
     "medicamento_buscado": "diclofenaco",
@@ -63,7 +63,7 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/diclofenaco-100-mg-20-tabletas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-13T12:42:26.346581"
+    "fecha_consulta": "2026-07-13T20:01:24.784318"
   },
   {
     "medicamento_buscado": "desconocido",
@@ -74,7 +74,7 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/loratadina-10-mg-10-tabletas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-13T12:42:27.354874"
+    "fecha_consulta": "2026-07-13T20:01:25.261750"
   },
   {
     "medicamento_buscado": "desconocido",
@@ -85,7 +85,7 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/metformina-850-mg-30-tabletas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-13T12:42:28.348783"
+    "fecha_consulta": "2026-07-13T20:01:25.736790"
   },
   {
     "medicamento_buscado": "desconocido",
@@ -96,6 +96,6 @@
     "vigencia_promo": null,
     "url_producto": "https://www.probemedic.mx/celecoxib-200-mg-10-capsulas.html",
     "fuente": "scraper_web",
-    "fecha_consulta": "2026-07-13T12:42:29.411348"
+    "fecha_consulta": "2026-07-13T20:01:26.214336"
   }
 ]
