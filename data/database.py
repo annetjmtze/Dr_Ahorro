@@ -1,11 +1,11 @@
 import os
 import sqlite3
 import psycopg
+from psycopg.rows import dict_row          # Para obtener filas como diccionarios en PostgreSQL
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 import re
 import unicodedata
-from urllib.parse import urlparse
 
 # ============================================================
 # CONFIGURACIÓN: detectar entorno automáticamente
@@ -20,10 +20,10 @@ DB_PATH = "data/precios.db"
 # CONEXIÓN: PostgreSQL o SQLite según entorno
 # ============================================================
 def get_connection():
-    """Devuelve conexión a PostgreSQL (si DATABASE_URL existe) o SQLite."""
+    """Devuelve conexión a PostgreSQL (con row_factory=dict_row) o SQLite."""
     if IS_PROD:
-        # PostgreSQL en Railway
-        return psycopg.connect(DATABASE_URL)
+        # PostgreSQL con row_factory para obtener diccionarios directamente
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     else:
         # SQLite local (fallback)
         conn = sqlite3.connect(DB_PATH)
@@ -128,7 +128,7 @@ def normalizar_texto(texto: str) -> str:
     return texto
 
 # ============================================================
-# BÚSQUEDA (compatible con ambos motores)
+# BÚSQUEDA PRINCIPAL (últimas 24 horas)
 # ============================================================
 def get_precios(medicamento: str, horas: int = 24) -> List[Dict[str, Any]]:
     medicamento_norm = normalizar_texto(medicamento)
@@ -153,35 +153,50 @@ def get_precios(medicamento: str, horas: int = 24) -> List[Dict[str, Any]]:
     rows = cursor.fetchall()
     conn.close()
     
-    # Convertir a dict (funciona con sqlite3.Row y psycopg)
+    # En PostgreSQL ya son dict; en SQLite convertimos Row a dict
     if IS_PROD:
-        return [dict(row) for row in rows]
+        return rows
     else:
         return [dict(row) for row in rows]
 
 def get_resumen(medicamento: str) -> List[Dict[str, Any]]:
+    """Alias de get_precios con 24 horas por defecto."""
+    return get_precios(medicamento, horas=24)
+
+# ============================================================
+# BÚSQUEDA HISTÓRICA (sin límite de tiempo)
+# ============================================================
+def get_last_precios(medicamento: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """
+    Devuelve los últimos `limit` registros del medicamento, sin filtrar por fecha.
+    Útil para mostrar datos cuando no hay actualizaciones recientes.
+    """
     medicamento_norm = normalizar_texto(medicamento)
-    fecha_limite = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-    
     conn = get_connection()
     cursor = conn.cursor()
     
     if IS_PROD:
         cursor.execute('''
             SELECT * FROM precios
-            WHERE LOWER(medicamento) LIKE %s AND fecha >= %s
+            WHERE LOWER(medicamento) LIKE %s
             ORDER BY fecha DESC
-        ''', (f'%{medicamento_norm}%', fecha_limite))
+            LIMIT %s
+        ''', (f'%{medicamento_norm}%', limit))
     else:
         cursor.execute('''
             SELECT * FROM precios
-            WHERE LOWER(medicamento) LIKE ? AND fecha >= ?
+            WHERE LOWER(medicamento) LIKE ?
             ORDER BY fecha DESC
-        ''', (f'%{medicamento_norm}%', fecha_limite))
+            LIMIT ?
+        ''', (f'%{medicamento_norm}%', limit))
     
     rows = cursor.fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+    
+    if IS_PROD:
+        return rows
+    else:
+        return [dict(row) for row in rows]
 
 # ============================================================
 # CONTAR REGISTROS (útil para migración)
