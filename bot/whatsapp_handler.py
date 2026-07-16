@@ -9,7 +9,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
 
 from llm.normalizer import MedicamentoNormalizer
-from data.database import get_resumen, init_db, save_precio
+from data.database import get_resumen, init_db, save_precio, get_last_precios
 from bot.counter import increment_and_check_limit, is_limit_reached, LIMITE_DIARIO, LIMITE_NOTIFICACION
 from bot.telegram_notifier import send_telegram_message
 
@@ -19,75 +19,6 @@ load_dotenv()
 #  INICIALIZAR BASE DE DATOS
 # --------------------------------------------
 init_db()  # Crea la tabla si no existe
-
-# Poblar con datos de prueba SOLO si la tabla está vacía
-def poblar_datos_prueba():
-    """Inserta medicamentos de ejemplo si no hay registros."""
-    from data.database import get_connection
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM precios")
-    count = cursor.fetchone()[0]
-    conn.close()
-    
-    if count == 0:
-        logging.info("Poblando base de datos con datos de prueba...")
-        ahora = datetime.now().isoformat()
-        medicamentos = [
-            {
-                "medicamento": "paracetamol",
-                "nombre_raw": "Paracetamol 500 mg",
-                "farmacia": "Farmacia del Ahorro",
-                "ciudad": "CDMX",
-                "precio": 45.50,
-                "precio_promo": 39.90,
-                "vigencia": "2026-07-20",
-                "fuente": "prueba_inicial",
-                "fecha": ahora
-            },
-            {
-                "medicamento": "paracetamol",
-                "nombre_raw": "Paracetamol 500 mg",
-                "farmacia": "Farmacia San Pablo",
-                "ciudad": "CDMX",
-                "precio": 48.00,
-                "precio_promo": None,
-                "vigencia": None,
-                "fuente": "prueba_inicial",
-                "fecha": ahora
-            },
-            {
-                "medicamento": "ibuprofeno",
-                "nombre_raw": "Ibuprofeno 400 mg",
-                "farmacia": "Farmacias Similares",
-                "ciudad": "CDMX",
-                "precio": 89.00,
-                "precio_promo": 79.50,
-                "vigencia": "2026-07-25",
-                "fuente": "prueba_inicial",
-                "fecha": ahora
-            },
-            {
-                "medicamento": "metformina",
-                "nombre_raw": "Metformina 850 mg",
-                "farmacia": "Farmacia del Ahorro",
-                "ciudad": "CDMX",
-                "precio": 120.00,
-                "precio_promo": None,
-                "vigencia": None,
-                "fuente": "prueba_inicial",
-                "fecha": ahora
-            }
-        ]
-        for data in medicamentos:
-            try:
-                save_precio(data)
-            except Exception as e:
-                logging.error(f"Error insertando datos de prueba: {e}")
-        logging.info("Base de datos poblada con datos de prueba.")
-
-# Ejecutar la población de datos
-poblar_datos_prueba()
 
 # --------------------------------------------
 #  APLICACIÓN FLASK
@@ -126,16 +57,16 @@ def whatsapp_webhook():
         nombre_generico = resultado.get('nombre_generico', '').lower()
         nombre_ingresado = resultado.get('nombre_ingresado', incoming_msg)
 
-        # 1. Buscar con nombre genérico (lo que Claude devuelve)
+        # 1. Buscar con nombre genérico (lo que Claude devuelve) - solo últimas 24h
         precios = get_resumen(nombre_generico)
 
-        # 2. Si no hay, intentar con el nombre que el usuario escribió
+        # 2. Si no hay, intentar con el nombre que el usuario escribió - últimas 24h
         if not precios and nombre_ingresado:
             logging.info(f"Fallback: buscando con nombre ingresado: {nombre_ingresado}")
             precios = get_resumen(nombre_ingresado.lower())
 
         if precios:
-            # ---- Construir respuesta con precios ----
+            # ---- Construir respuesta con precios recientes ----
             respuesta = f" *{nombre_generico.title()}*\n\n"
             respuesta += " *Precios en farmacias:*\n"
             for i, p in enumerate(precios, 1):
@@ -156,14 +87,42 @@ def whatsapp_webhook():
             respuesta += "\n↩️ Escribe otro medicamento para comparar"
             msg.body(respuesta)
         else:
-            # ---- No hay precios → mostrar ficha del medicamento ----
-            ficha = f"📋 *Ficha de {nombre_ingresado.title()}*\n\n"
-            ficha += f"*Nombre genérico:* {resultado.get('nombre_generico', 'No disponible')}\n"
-            ficha += f"*Uso principal:* {resultado.get('uso_principal', 'No disponible')}\n"
-            receta = "Sí" if resultado.get('requiere_receta') else "No"
-            ficha += f"*¿Requiere receta?* {receta}\n"
-            ficha += "\n⚠️ Aún no tenemos precios para este medicamento. Estamos actualizando nuestra base de datos — intenta de nuevo mañana o busca otro medicamento."
-            msg.body(ficha)
+            # ---- Sin precios recientes: buscar históricos ----
+            historicos = get_last_precios(nombre_generico, limit=5)
+            if not historicos and nombre_ingresado:
+                historicos = get_last_precios(nombre_ingresado.lower(), limit=5)
+
+            if historicos:
+                # Mostrar últimos registros disponibles (aunque no sean recientes)
+                respuesta = f"⚠️ *No hay precios actualizados en las últimas 24 horas.*\n"
+                respuesta += f"Mostrando los últimos *{len(historicos)}* registros disponibles:\n\n"
+                for i, p in enumerate(historicos, 1):
+                    linea = f"{i}. {p['farmacia']} — ${p['precio']:.2f}"
+                    if p.get('precio_promo'):
+                        linea += f"\n ️ Promo: ${p['precio_promo']:.2f} (antes)"
+                    if p.get('vigencia'):
+                        linea += f"\n Válido hasta: {p['vigencia']}"
+                    respuesta += linea + "\n"
+                # Mostrar cuándo fue la última actualización
+                if historicos and historicos[0].get('fecha'):
+                    try:
+                        ts = datetime.fromisoformat(historicos[0]['fecha'])
+                        delta = datetime.now() - ts
+                        horas = int(delta.total_seconds() // 3600)
+                        respuesta += f"\n Última actualización hace {horas} horas"
+                    except:
+                        pass
+                respuesta += "\n↩️ Escribe otro medicamento para comparar"
+                msg.body(respuesta)
+            else:
+                # ---- No hay ningún registro en la base de datos ----
+                ficha = f"📋 *Ficha de {nombre_ingresado.title()}*\n\n"
+                ficha += f"*Nombre genérico:* {resultado.get('nombre_generico', 'No disponible')}\n"
+                ficha += f"*Uso principal:* {resultado.get('uso_principal', 'No disponible')}\n"
+                receta = "Sí" if resultado.get('requiere_receta') else "No"
+                ficha += f"*¿Requiere receta?* {receta}\n"
+                ficha += "\n⚠️ Aún no tenemos precios para este medicamento. Estamos actualizando nuestra base de datos — intenta de nuevo mañana o busca otro medicamento."
+                msg.body(ficha)
 
         # --- NOTIFICACIÓN TELEGRAM (80%) ---
         if increment_and_check_limit():
