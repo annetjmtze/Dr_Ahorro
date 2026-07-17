@@ -66,34 +66,88 @@ def whatsapp_webhook():
             precios = get_resumen(nombre_ingresado.lower())
 
         if precios:
-            # ---- Construir respuesta con precios recientes ----
-            respuesta = f" *{nombre_generico.title()}*\n\n"
-            respuesta += " *Precios en farmacias:*\n"
-            for i, p in enumerate(precios, 1):
-                linea = f"{i}. {p['farmacia']} — ${p['precio']:.2f}"
-                if p.get('precio_promo'):
-                    linea += f"\n ️ Promo: ${p['precio_promo']:.2f} (antes)"
-                if p.get('vigencia'):
-                    linea += f"\n Válido hasta: {p['vigencia']}"
-                respuesta += linea + "\n"
+            # ---- NUEVA LÓGICA: SEPARAR FARMACIAS FÍSICAS Y DELIVERY ----
+            farmacias = []
+            delivery = []
+            for p in precios:
+                fuente = p.get('fuente', 'farmacia').lower()
+                # Incluir tus fuentes reales
+                if fuente in ['rappi', 'ubereats', 'delivery', 'agente_rappi', 'agente_ubereats']:
+                    delivery.append(p)
+                else:
+                    farmacias.append(p)
+
+            # Ordenar cada grupo por precio (menor a mayor)
+            farmacias.sort(key=lambda x: x['precio'])
+            delivery.sort(key=lambda x: x['precio'])
+
+            # Construir respuesta
+            respuesta = f"💊 *{nombre_generico.title()}*\n\n"
+
+            # ---- 1. FARMACIAS FÍSICAS ----
+            if farmacias:
+                respuesta += "📍 *Farmacias cercanas:*\n"
+                for i, p in enumerate(farmacias, 1):
+                    linea = f"{i}. {p['farmacia']} — ${p['precio']:.2f}"
+                    if p.get('precio_promo'):
+                        linea += f"\n   🏷️ Promo: ${p['precio_promo']:.2f} (antes)"
+                    if p.get('vigencia'):
+                        linea += f" hasta {p['vigencia']}"
+                    respuesta += linea + "\n"
+            else:
+                respuesta += "📍 No hay farmacias físicas con precios recientes.\n"
+
+            # ---- 2. DELIVERY (con generación de link automático si falta) ----
+            if delivery:
+                respuesta += "\n🛵 *También disponible a domicilio:*\n"
+                for p in delivery:
+                    # Nombre de la plataforma
+                    fuente = p['fuente'].lower()
+                    if fuente == 'rappi' or fuente == 'agente_rappi':
+                        plataforma = "Rappi"
+                        url = p.get('url')
+                        if not url:
+                            # Generar enlace de búsqueda
+                            busqueda = nombre_generico.replace(' ', '+')
+                            url = f"https://rappi.com.mx/search?q={busqueda}"
+                    elif fuente == 'ubereats' or fuente == 'agente_ubereats':
+                        plataforma = "Uber Eats"
+                        url = p.get('url')
+                        if not url:
+                            busqueda = nombre_generico.replace(' ', '+')
+                            url = f"https://ubereats.com/mx/search?q={busqueda}"
+                    else:
+                        plataforma = "Delivery"
+                        url = p.get('url') or "#"
+                    
+                    linea = f"• {plataforma} ({p['farmacia']}) — ${p['precio']:.2f}"
+                    if url:
+                        linea += f"\n  ⏱️ 25-35 min · 🔗 Pedir aquí: {url}"
+                    respuesta += linea + "\n"
+
+            # ---- 3. ANTIGÜEDAD DE LOS PRECIOS ----
             if precios and precios[0].get('fecha'):
                 try:
                     ts = datetime.fromisoformat(precios[0]['fecha'])
                     delta = datetime.now() - ts
                     horas = int(delta.total_seconds() // 3600)
-                    respuesta += f"\n Precios actualizados hace {horas} horas"
+                    if horas < 1:
+                        respuesta += f"\n📅 Precios actualizados hace menos de 1 hora"
+                    else:
+                        respuesta += f"\n📅 Precios actualizados hace {horas} horas"
                 except:
                     pass
+
             respuesta += "\n↩️ Escribe otro medicamento para comparar"
             msg.body(respuesta)
+
         else:
-            # ---- Sin precios recientes: buscar históricos ----
+            # ---- SIN PRECIOS RECIENTES: BUSCAR HISTÓRICOS ----
             historicos = get_last_precios(nombre_generico, limit=5)
             if not historicos and nombre_ingresado:
                 historicos = get_last_precios(nombre_ingresado.lower(), limit=5)
 
             if historicos:
-                # Mostrar últimos registros disponibles (aunque no sean recientes)
                 respuesta = f"⚠️ *No hay precios actualizados en las últimas 24 horas.*\n"
                 respuesta += f"Mostrando los últimos *{len(historicos)}* registros disponibles:\n\n"
                 for i, p in enumerate(historicos, 1):
@@ -103,7 +157,6 @@ def whatsapp_webhook():
                     if p.get('vigencia'):
                         linea += f"\n Válido hasta: {p['vigencia']}"
                     respuesta += linea + "\n"
-                # Mostrar cuándo fue la última actualización
                 if historicos and historicos[0].get('fecha'):
                     try:
                         ts = datetime.fromisoformat(historicos[0]['fecha'])
@@ -115,7 +168,6 @@ def whatsapp_webhook():
                 respuesta += "\n↩️ Escribe otro medicamento para comparar"
                 msg.body(respuesta)
             else:
-                # ---- No hay ningún registro en la base de datos ----
                 ficha = f"📋 *Ficha de {nombre_ingresado.title()}*\n\n"
                 ficha += f"*Nombre genérico:* {resultado.get('nombre_generico', 'No disponible')}\n"
                 ficha += f"*Uso principal:* {resultado.get('uso_principal', 'No disponible')}\n"
@@ -135,7 +187,6 @@ def whatsapp_webhook():
 
     except Exception as e:
         logging.error(f"Error crítico en webhook: {e}", exc_info=True)
-        # Si es error de rate limit de Twilio, mensaje específico
         if "429" in str(e) or "Too Many Requests" in str(e):
             msg.body("Alcanzamos el límite de consultas por hoy. Vuelve mañana.")
         else:
@@ -147,7 +198,6 @@ def whatsapp_webhook():
 #  FUNCIÓN PARA main.py
 # --------------------------------------------
 def run_whatsapp_bot(port=5000):
-    """Arranca el servidor Flask para WhatsApp."""
     app.run(host="0.0.0.0", port=port, debug=False)
 
 # --------------------------------------------
