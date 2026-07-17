@@ -139,17 +139,26 @@ def whatsapp_webhook():
             return Response(str(resp), mimetype="application/xml")
 
         nombre_generico = resultado.get('nombre_generico', '').lower()
-        nombre_ingresado = resultado.get('nombre_ingresado', incoming_msg)
+        nombre_ingresado = resultado.get('nombre_ingresado', incoming_msg).lower()
 
-        # 1. Buscar con nombre genérico - últimas 24h
+        # ---- BUSCAR PRECIOS CON AMBOS NOMBRES ----
+        # 1. Buscar con nombre genérico (ej: acetaminofeno)
         precios = get_resumen(nombre_generico)
+        # 2. Buscar con el nombre que el usuario escribió (ej: paracetamol)
+        precios_original = get_resumen(nombre_ingresado)
 
-        # 2. Si no hay, intentar con el nombre que el usuario escribió
-        if not precios and nombre_ingresado:
-            logging.info(f"Fallback: buscando con nombre ingresado: {nombre_ingresado}")
-            precios = get_resumen(nombre_ingresado.lower())
+        # Combinar ambas listas evitando duplicados (clave: farmacia+precio+url)
+        combined = []
+        seen = set()
+        for p in precios + precios_original:
+            key = (p.get('farmacia'), p.get('precio'), p.get('url'))
+            if key not in seen:
+                seen.add(key)
+                combined.append(p)
 
-        # ---- NUEVA LÓGICA: SEPARAR FARMACIAS FÍSICAS Y DELIVERY ----
+        precios = combined
+
+        # ---- SI HAY PRECIOS RECIENTES ----
         if precios:
             farmacias = []
             delivery = []
@@ -164,7 +173,7 @@ def whatsapp_webhook():
             farmacias.sort(key=lambda x: x['precio'])
             delivery.sort(key=lambda x: x['precio'])
 
-            # Construir respuesta con el nuevo formato
+            # Construir respuesta con el formato requerido
             respuesta = formatear_respuesta(nombre_generico, farmacias, delivery)
             msg.body(respuesta)
 
@@ -172,7 +181,7 @@ def whatsapp_webhook():
             # ---- SIN PRECIOS RECIENTES: BUSCAR HISTÓRICOS ----
             historicos = get_last_precios(nombre_generico, limit=5)
             if not historicos and nombre_ingresado:
-                historicos = get_last_precios(nombre_ingresado.lower(), limit=5)
+                historicos = get_last_precios(nombre_ingresado, limit=5)
 
             if historicos:
                 respuesta = f"⚠️ *No hay precios actualizados en las últimas 24 horas.*\n"
