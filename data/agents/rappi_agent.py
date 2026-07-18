@@ -111,80 +111,64 @@ class RappiAgent:
                 except:
                     nombre = medication
 
-                # ── LINK DEL PRODUCTO (MÉTODO DEFINITIVO) ──
+                # ── LINK DEL PRODUCTO (corregido) ──
                 href = None
 
-                # 1. Intentar extraer el ID del producto desde la imagen o desde el nombre
+                # 1. Método principal: extraer ID de la imagen (UUID)
                 try:
-                    # Buscar la imagen
                     img = await product.query_selector("img")
                     if img:
                         src = await img.get_attribute("src")
                         if src:
-                            # Extraer ID de la URL de la imagen: .../products/87adfc00-a67e-4428-b45c-68e0c8e8a032.png
+                            # Buscar UUID en la URL de la imagen
                             match = re.search(r'/products/([a-f0-9-]+)\.', src)
                             if match:
                                 product_id = match.group(1)
-                                # Construir slug a partir del nombre
-                                slug = nombre.lower().replace(' ', '-').replace('(', '').replace(')', '').replace('/', '-')
+                                # Generar slug a partir del nombre
+                                slug = nombre.lower().replace(' ', '-')
+                                slug = re.sub(r'[^a-z0-9-]', '', slug)  # Eliminar caracteres especiales
                                 href = f"https://www.rappi.com.mx/p/{slug}-{product_id}"
                                 logger.info(f"✅ Link construido desde imagen: {href}")
                 except Exception as e:
                     logger.warning(f"Error extrayendo de imagen: {e}")
 
-                # 2. Si no, buscar en atributos data-*
+                # 2. Si falla, buscar un enlace <a> que contenga '/p/'
                 if not href:
                     try:
-                        # Buscar cualquier atributo que contenga el ID del producto
-                        js_code = """
-                            (productElement) => {
-                                // Buscar en todos los atributos de todos los elementos dentro del producto
-                                const all = productElement.querySelectorAll('*');
-                                for (const el of all) {
-                                    for (const attr of el.attributes) {
-                                        if (attr.value && (attr.value.includes('/p/') || attr.value.includes('product'))) {
-                                            return attr.value;
-                                        }
-                                    }
-                                }
-                                return null;
-                            }
-                        """
-                        href = await product.evaluate(js_code, product)
-                        if href and not href.startswith("http"):
-                            href = "https://www.rappi.com.mx" + href
-                        logger.info(f"✅ Link encontrado en atributos: {href}")
-                    except:
-                        pass
+                        link_element = await product.query_selector("a[href*='/p/']")
+                        if link_element:
+                            href = await link_element.get_attribute("href")
+                            logger.info(f"✅ Link encontrado en <a href>: {href}")
+                    except Exception as e:
+                        logger.warning(f"Error buscando <a href>: {e}")
 
-                # 3. Último recurso: hacer clic en el nombre y capturar URL
+                # 3. Último recurso: hacer clic en el producto y capturar URL
                 if not href:
                     try:
-                        name_for_click = await product.query_selector("h3[data-qa='product-name']")
-                        if name_for_click:
-                            logger.info("🖱️ Haciendo clic en el nombre para obtener link...")
-                            # Hacer clic y esperar a que la URL cambie (sin expect_navigation)
-                            await name_for_click.click()
-                            # Esperar un poco y luego obtener la URL actual
-                            await asyncio.sleep(3)
-                            href = page.url
-                            # Si la URL no contiene /p/, probablemente no ha cambiado
-                            if '/p/' not in href:
-                                # Intentar esperar un poco más
-                                await asyncio.sleep(2)
-                                href = page.url
-                            if '/p/' in href:
-                                logger.info(f"✅ Link obtenido por clic: {href}")
-                            else:
-                                href = None
-                                # Intentar volver atrás por si acaso
-                                await page.go_back()
+                        logger.info("🖱️ Intentando obtener link mediante clic en el producto...")
+                        # Hacer clic en el contenedor del producto
+                        async with page.expect_navigation(timeout=15000) as nav_info:
+                            await product.click()
+                        href = page.url
+                        if '/p/' in href:
+                            logger.info(f"✅ Link obtenido por clic: {href}")
+                            await page.go_back()
+                            await page.wait_for_load_state("networkidle")
+                            await self._random_pause()
+                        else:
+                            href = None
                     except Exception as e:
                         logger.warning(f"Error en clic: {e}")
 
-                # Completar URL si es relativa
-                if href and not href.startswith("http"):
-                    href = "https://www.rappi.com.mx" + href
+                # ── FILTRO FINAL: descartar enlaces no válidos ──
+                if href:
+                    # Si contiene palabras clave de icono o no tiene '/p/', lo descartamos
+                    if 'add-product' in href or 'icon' in href or '/p/' not in href:
+                        logger.warning(f"⚠️ Enlace descartado (no válido): {href}")
+                        href = None
+                    # Completar URL si es relativa
+                    elif not href.startswith("http"):
+                        href = "https://www.rappi.com.mx" + href
 
                 # ── Screenshot ──
                 screenshot_bytes = await page.screenshot(full_page=False)
