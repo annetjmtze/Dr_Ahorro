@@ -1,6 +1,6 @@
 FROM python:3.14-slim
 
-# Instalar dependencias del sistema: Chrome y herramientas de compilación para lxml
+# Instalar dependencias del sistema: Chrome, herramientas de compilación y bibliotecas para Pillow/lxml
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -8,6 +8,12 @@ RUN apt-get update && apt-get install -y \
     unzip \
     libxml2-dev \
     libxslt-dev \
+    zlib1g-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libwebp-dev \
+    libfreetype-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Agregar repositorio de Google Chrome (método moderno)
@@ -18,7 +24,7 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
 RUN apt-get update && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# Variables de entorno para Playwright
+# Variables de entorno para Playwright (usar Chrome del sistema)
 ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
 ENV CHROME_PATH=/usr/bin/google-chrome-stable
 
