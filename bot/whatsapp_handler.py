@@ -53,19 +53,32 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -
     else:
         lines.append("📍 No hay farmacias físicas con precios recientes.\n")
 
+    # ---- NUEVO FORMATO DE DELIVERY (Semana 4) ----
     if delivery:
-        lines.append("🛵 *También disponible a domicilio:*")
-        for p in delivery[:3]:
+        # Detectar plataformas presentes
+        plataformas = set()
+        for p in delivery:
             fuente = p['fuente'].lower()
             if 'rappi' in fuente:
-                plataforma = "Rappi"
-                base_url = "https://www.rappi.com.mx"
+                plataformas.add('rappi')
             elif 'ubereats' in fuente:
-                plataforma = "Uber Eats"
-                base_url = "https://ubereats.com/mx"
+                plataformas.add('ubereats')
+
+        # Elegir título según plataformas
+        if len(plataformas) == 1:
+            if 'rappi' in plataformas:
+                titulo = "🛵 *A domicilio vía Rappi*"
+            elif 'ubereats' in plataformas:
+                titulo = "🛵 *A domicilio vía Uber Eats*"
             else:
-                plataforma = "Delivery"
-                base_url = "#"
+                titulo = "🛵 *A domicilio:*"
+        else:
+            titulo = "🛵 *A domicilio vía Rappi / Uber Eats*"
+
+        lines.append(titulo)
+
+        for p in delivery[:3]:
+            fuente = p['fuente'].lower()
 
             # Obtener URL de la BD
             url = p.get('url') or p.get('link_producto')
@@ -73,17 +86,26 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -
             if not url or 'add-product-icon' in url:
                 busqueda = nombre_generico.replace(' ', '+')
                 if 'rappi' in fuente:
-                    url = f"{base_url}/search?q={busqueda}"
+                    url = f"https://www.rappi.com.mx/search?q={busqueda}"
                 elif 'ubereats' in fuente:
-                    url = f"{base_url}/search?q={busqueda}"
+                    url = f"https://ubereats.com/mx/search?q={busqueda}"
                 else:
-                    url = "#"
+                    url = None  # Sin URL válida, no mostrar enlace
 
-            entrega = p.get('entrega_estimada', '25-35 min')
-            linea = f"• {plataforma} ({p['farmacia']}) — ${p['precio']:.2f}"
-            linea += f"\n  ⏱️ {entrega} · 🔗 Pedir aquí: {url}"
+            # Línea con farmacia y precio
+            linea = f"  {p['farmacia']} — ${p['precio']:.2f}"
             lines.append(linea)
-        lines.append("")
+
+            # Tiempo de entrega (explícito y en línea separada)
+            entrega = p.get('entrega_estimada', '25-35 min')
+            lines.append(f"  🕐 Entrega en {entrega}")
+
+            # Enlace solo si es válido
+            if url and url != '#' and url is not None:
+                lines.append(f"  👉 Pedir aquí: {url}")
+
+            # Línea en blanco entre cada opción de delivery
+            lines.append("")
 
     if farmacias or delivery:
         todos = farmacias + delivery
@@ -111,6 +133,7 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -
 
     lines.append("\n↩️ Escribe otro medicamento para comparar")
     return "\n".join(lines)
+
 
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():

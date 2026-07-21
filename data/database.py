@@ -8,6 +8,7 @@ import re
 import unicodedata
 import logging
 from difflib import SequenceMatcher
+from urllib.parse import urlparse  # 👈 NUEVA IMPORTACIÓN
 
 # ============================================================
 # CONFIGURACIÓN
@@ -84,7 +85,10 @@ def normalizar_texto(texto: str) -> str:
     return texto
 
 def normalizar_farmacia(nombre: str) -> str:
-    """Normaliza el nombre de la farmacia para deduplicación (case-insensitive)."""
+    """
+    Normaliza el nombre de la farmacia para deduplicación (case-insensitive).
+    Extrae el nombre entre paréntesis si existe, elimina palabras comunes y convierte a minúsculas.
+    """
     if not nombre:
         return ""
     # Extraer lo que está entre paréntesis (ej: "Rappi (Farmacias Guadalajara)")
@@ -144,11 +148,30 @@ def validar_precio(precio: float, medicamento_generico: str, conn) -> bool:
             logging.warning(f"Precio excede límite absoluto para {medicamento_generico}: ${precio}")
             return False
 
+# ============================================================
+# VALIDACIÓN DE URL (NUEVO)
+# ============================================================
+def es_url_valida(url: str) -> bool:
+    """Verifica si la URL es válida (tiene esquema http/https y netloc)."""
+    if not url:
+        return False
+    try:
+        r = urlparse(url)
+        return r.scheme in ('http', 'https') and bool(r.netloc)
+    except:
+        return False
+
 def save_precio(data: Dict[str, Any]):
     required = ['medicamento', 'farmacia', 'precio', 'fuente', 'fecha']
     for field in required:
         if field not in data or data[field] is None:
             raise ValueError(f"Campo '{field}' obligatorio")
+    
+    # ---- VALIDAR URL (NUEVO) ----
+    url = data.get('url')
+    if url and not es_url_valida(url):
+        logging.warning(f"URL inválida detectada: {url} — se guardará como NULL")
+        data['url'] = None  # o '' según prefieras
     
     fecha_str = data['fecha']
     if not IS_PROD:
@@ -174,7 +197,7 @@ def save_precio(data: Dict[str, Any]):
             data['precio'],
             data.get('precio_promo'),
             data.get('vigencia'),
-            data.get('url'),
+            data.get('url'),  # Ya validado
             data.get('imagen_url'),
             data['fuente'],
             fecha_str
@@ -193,7 +216,7 @@ def save_precio(data: Dict[str, Any]):
             data['precio'],
             data.get('precio_promo'),
             data.get('vigencia'),
-            data.get('url'),
+            data.get('url'),  # Ya validado
             data.get('imagen_url'),
             data['fuente'],
             fecha_str
@@ -245,7 +268,6 @@ def get_precios(medicamento: str, horas: int = 24) -> List[Dict[str, Any]]:
     mejores = {}
     for r in filtrados_precio:
         farmacia_norm = normalizar_farmacia(r['farmacia'])
-        # Comparar fechas como strings (ISO) funciona si están en el mismo formato
         if farmacia_norm not in mejores or r['fecha'] > mejores[farmacia_norm]['fecha']:
             mejores[farmacia_norm] = r
     
