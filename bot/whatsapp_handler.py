@@ -59,18 +59,23 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -
             fuente = p['fuente'].lower()
             if 'rappi' in fuente:
                 plataforma = "Rappi"
+                base_url = "https://www.rappi.com.mx"
             elif 'ubereats' in fuente:
                 plataforma = "Uber Eats"
+                base_url = "https://ubereats.com/mx"
             else:
                 plataforma = "Delivery"
+                base_url = "#"
 
+            # Obtener URL de la BD
             url = p.get('url') or p.get('link_producto')
-            if not url:
+            # Si el url es inválido (contiene "add-product-icon" o está vacío), construir búsqueda
+            if not url or 'add-product-icon' in url:
                 busqueda = nombre_generico.replace(' ', '+')
                 if 'rappi' in fuente:
-                    url = f"https://rappi.com.mx/search?q={busqueda}"
+                    url = f"{base_url}/search?q={busqueda}"
                 elif 'ubereats' in fuente:
-                    url = f"https://ubereats.com/mx/search?q={busqueda}"
+                    url = f"{base_url}/search?q={busqueda}"
                 else:
                     url = "#"
 
@@ -175,10 +180,10 @@ def whatsapp_webhook():
 
             logging.info(f"Después de filtro de precio: {len(filtrados_precio)}")
 
-            # Deduplicación por farmacia (mantener el más reciente)
+            # Deduplicación por farmacia (mantener el más reciente) con normalización a minúsculas
             mejores = {}
             for p in filtrados_precio:
-                farmacia_norm = normalizar_farmacia(p['farmacia'])
+                farmacia_norm = normalizar_farmacia(p['farmacia']).lower()
                 if farmacia_norm not in mejores or p['fecha'] > mejores[farmacia_norm]['fecha']:
                     mejores[farmacia_norm] = p
             precios_depurados = list(mejores.values())
