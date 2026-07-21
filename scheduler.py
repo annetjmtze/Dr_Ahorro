@@ -19,10 +19,11 @@ except ImportError as e:
 
 from data.database import init_db, get_connection, contar_por_fuente, count_precios
 
-# ── Logging ──
+# ── Logging (FORZAR SALIDA A STDOUT) ──
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stdout  # <-- Esto hace que Railway capture los logs
 )
 logger = logging.getLogger(__name__)
 
