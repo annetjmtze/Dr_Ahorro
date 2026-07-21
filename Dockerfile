@@ -1,26 +1,43 @@
-# Usa una imagen ligera de Python con herramientas de sistema
 FROM python:3.14-slim
 
-# Instala Chromium y sus dependencias (necesario para Playwright)
+# Instalar dependencias del sistema: Chrome y bibliotecas para Pillow/lxml
 RUN apt-get update && apt-get install -y \
-    chromium \
+    wget \
+    gnupg \
+    curl \
+    unzip \
+    libxml2-dev \
+    libxslt-dev \
+    zlib1g-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libwebp-dev \
+    libfreetype-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Variables de entorno para que Playwright use Chromium del sistema
-ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
-ENV CHROME_PATH=/usr/bin/chromium
+# Agregar repositorio de Google Chrome (método moderno sin apt-key)
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
 
-# Directorio de trabajo
+# Instalar Google Chrome estable
+RUN apt-get update && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Variables de entorno para que Playwright use Chrome del sistema
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
+ENV CHROME_PATH=/usr/bin/google-chrome-stable
+
 WORKDIR /app
 
-# Copiar requirements primero (para cachear capas)
+# Copiar requirements e instalar dependencias Python
 COPY requirements.txt .
-
-# Instalar dependencias de Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el resto del código
+# Instalar Playwright (para los controladores, pero usaremos Chrome del sistema)
+RUN playwright install
+
+# Copiar el código
 COPY . .
 
-# Comando por defecto (se puede sobrescribir en Railway)
 CMD ["python", "scheduler.py"]
