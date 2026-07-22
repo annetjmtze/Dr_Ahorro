@@ -33,6 +33,7 @@
   - **Agentes de Delivery**: Consulta precios en **Rappi** y **Uber Eats**.
   - **Scrapers Legacy**: Soporte para sitios estáticos con `requests` y `BeautifulSoup`.
 - ✅ **Inteligencia Artificial**: Utiliza **Claude (Anthropic)** para normalizar los nombres de medicamentos ingresados por el usuario (ej. "Tempra" -> "Paracetamol").
+- ✅ **Fallback Inteligente**: Si no se encuentran precios, el bot busca alternativas basadas en el principio activo, destaca si se requiere receta y puede responder preguntas de seguimiento básicas.
 - ✅ Almacena el historial de precios en una base de datos **PostgreSQL** (producción) o **SQLite** (desarrollo).
 - ✅ **Almacenamiento en la Nube**: Guarda capturas de pantalla de las búsquedas de Playwright en **Cloudflare R2** como evidencia.
 - ✅ **Interfaz Multicanal**: Funciona tanto en **Telegram** como en **WhatsApp** (vía Twilio).
@@ -96,6 +97,50 @@ graph TD
 
     style DB fill:#d5f5e3,stroke:#27ae60,stroke-width:2px
     style R2 fill:#fdebd0,stroke:#f39c12,stroke-width:2px
+```
+
+---
+
+# 🧠 Fallback Inteligente y Flujo Conversacional
+
+Uno de los aprendizajes clave fue que un mensaje de "no encontramos precios" no es útil para el usuario. El bot debe ser proactivo, ofrecer alternativas y guiar al usuario.
+
+### Antes (Respuesta poco útil)
+
+```text
+Aún no tenemos precios registrados
+para ese medicamento en tu zona.
+Estamos actualizando nuestra base
+de datos — intenta de nuevo mañana.
+```
+
+### Después (Fallback Inteligente)
+
+```text
+💊 *Amoxicilina + Ácido Clavulánico*
+⚠️ *Requiere receta médica*
+
+Aún no tenemos precios en tu zona,
+pero encontramos estos similares:
+
+• Amoxicilina 500mg (genérico)
+  → Farmacia Similares — $48.00
+  → Farmacias del Ahorro — $62.00
+
+¿Quieres buscar el precio exacto
+de este medicamento? Escribe "sí"
+y te avisamos cuando lo tengamos.
+```
+
+### Lógica Implementada
+
+1.  **Búsqueda de Alternativas**: Cuando no hay precios para un medicamento, el bot busca en la base de datos otras presentaciones que contengan el mismo **principio activo**. Si encuentra resultados, los ofrece como "similares".
+2.  **Información Crítica Primero**: Si el medicamento requiere receta, esta información se muestra al inicio del mensaje, en negrita y con un emoji de advertencia (⚠️) para máxima visibilidad.
+3.  **Flujo de Dos Turnos**: El bot mantiene un contexto de la última búsqueda del usuario. Esto le permite responder preguntas de seguimiento como:
+    -   `"sí"` / `"no"`: Para confirmar si desea ser notificado.
+    -   `"¿hay genérico?"`: Para listar las alternativas encontradas.
+    -   `"¿cuánto tarda?"`: Para dar una estimación del tiempo de actualización de precios.
+4.  **Llamada a la Acción**: El mensaje de fallback siempre termina con una pregunta clara que guía al usuario sobre qué hacer a continuación, evitando callejones sin salida conversacionales.
 ```
 
 ---
