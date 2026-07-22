@@ -5,13 +5,21 @@ from datetime import datetime
 from PIL import Image, ImageEnhance
 import pytesseract
 
-# Añadir ruta de data para importar database
+# Añadir ruta de data para importar módulos
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from storage.r2_client import save_image
 from database import save_precio, init_db, contar_por_fuente
 
 # Configurar ruta de Tesseract (ajústala si es necesario)
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+# En Railway/Linux, normalmente está en /usr/bin/tesseract
+if sys.platform == "win32":
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+else:
+    # En Linux, suele estar en el PATH, pero podemos forzar si es necesario
+    # pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+    pass
 
 def preprocess(image_path):
     """Mejora el contraste de la imagen para OCR."""
@@ -25,10 +33,10 @@ def extract_text(image_path):
     text = pytesseract.image_to_string(processed_img, lang='spa')
     return text.strip()
 
-def parsear_texto_a_precios(texto, farmacia_default="Farmacia OCR"):
+def parsear_texto_a_precios(texto, farmacia_default="Farmacia OCR", imagen_url=None):
     """
     Intenta extraer pares (medicamento, precio) del texto OCR.
-    Retorna una lista de diccionarios listos para guardar.
+    Retorna una lista de diccionarios listos para guardar, incluyendo imagen_url.
     """
     lineas = texto.split('\n')
     resultados = []
@@ -71,17 +79,39 @@ def parsear_texto_a_precios(texto, farmacia_default="Farmacia OCR"):
                 'vigencia': None,
                 'url': None,
                 'fuente': 'ocr_tesseract',
-                'fecha': datetime.now().isoformat()
+                'fecha': datetime.now().isoformat(),
+                'imagen_url': imagen_url   # <--- NUEVO
             })
     return resultados
 
 def procesar_y_guardar(image_path, farmacia="Farmacia OCR"):
-    """Extrae texto de la imagen, parsea precios y guarda en BD."""
+    """
+    Extrae texto de la imagen, sube la imagen a R2, parsea precios y guarda en BD.
+    Retorna la lista de registros guardados.
+    """
+    # --- LEER LA IMAGEN Y SUBIR A R2 ---
+    try:
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+    except Exception as e:
+        print(f"⚠️ Error al leer imagen {image_path}: {e}")
+        return []
+    
+    # Subir a R2
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder = "ocr_tesseract"
+    base_name = os.path.splitext(os.path.basename(image_path))[0]
+    filename = f"{base_name}_{timestamp}.png"
+    imagen_url = save_image(image_bytes, folder, filename)
+    print(f"   📸 Imagen subida: {imagen_url}")
+    
+    # Extraer texto con Tesseract
     texto = extract_text(image_path)
     if not texto:
         print(f"⚠️ No se pudo extraer texto de {image_path}")
         return []
-    registros = parsear_texto_a_precios(texto, farmacia)
+    
+    registros = parsear_texto_a_precios(texto, farmacia, imagen_url)
     for r in registros:
         try:
             save_precio(r)
@@ -95,8 +125,7 @@ if __name__ == "__main__":
     init_db()
     print("📦 Base de datos inicializada para Tesseract")
     
-    # Ruta a las imágenes de prueba (ajusta según tu estructura)
-    # Si tienes varias imágenes en data/imagenes_prueba/, procesarlas todas
+    # Ruta a las imágenes de prueba
     carpeta_imagenes = "data/imagenes_prueba"
     imagenes = []
     if os.path.exists(carpeta_imagenes):
@@ -123,5 +152,12 @@ if __name__ == "__main__":
     
     # Mostrar conteo por fuente
     print("\n📊 Registros en BD por fuente:")
-    for row in contar_por_fuente():
-        print(f"  {row['fuente']}: {row['total']}")
+    try:
+        fuente_counts = contar_por_fuente()
+        if fuente_counts:
+            for fuente, total in fuente_counts.items():
+                print(f"  {fuente}: {total}")
+        else:
+            print("  No hay registros.")
+    except Exception as e:
+        print(f"Error al contar: {e}")

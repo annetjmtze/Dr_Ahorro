@@ -6,7 +6,11 @@ from datetime import datetime
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+# Añadir ruta de data para importar módulos
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Importar funciones de almacenamiento y BD
+from storage.r2_client import save_image
 from database import save_precio, init_db, contar_por_fuente
 
 # Cargar variables de entorno
@@ -36,20 +40,16 @@ Sin texto adicional. Sin backticks.
   ]
 }"""
 
-def encode_image_to_base64(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+def encode_image_to_base64(image_bytes):
+    """Codifica bytes de imagen a base64."""
+    return base64.b64encode(image_bytes).decode('utf-8')
 
-def extract_json_from_image(image_path):
-    media_type = "image/jpeg"
-    if image_path.lower().endswith(".png"):
-        media_type = "image/png"
-    elif image_path.lower().endswith(".gif"):
-        media_type = "image/gif"
-    elif image_path.lower().endswith(".webp"):
-        media_type = "image/webp"
-
-    base64_image = encode_image_to_base64(image_path)
+def extract_json_from_image_bytes(image_bytes, media_type="image/png"):
+    """
+    Extrae JSON de la imagen a partir de sus bytes usando Claude.
+    Retorna el diccionario parseado.
+    """
+    base64_image = encode_image_to_base64(image_bytes)
     response = client.messages.create(
         model="claude-haiku-4-5",
         max_tokens=1024,
@@ -85,6 +85,7 @@ def extract_json_from_image(image_path):
 def procesar_carpeta_claude(carpeta="data/imagenes_prueba", guardar=True):
     """
     Procesa todas las imágenes de la carpeta, extrae JSON y guarda en BD.
+    Cada imagen se sube a R2 y se guarda la URL en el campo imagen_url.
     Retorna el total de registros guardados.
     """
     total_guardados = 0
@@ -100,11 +101,38 @@ def procesar_carpeta_claude(carpeta="data/imagenes_prueba", guardar=True):
     for archivo in archivos:
         ruta = os.path.join(carpeta, archivo)
         print(f"\n🔍 Procesando con Claude: {archivo}...")
+        
+        # Leer la imagen en bytes
         try:
-            data = extract_json_from_image(ruta)
+            with open(ruta, "rb") as f:
+                image_bytes = f.read()
+        except Exception as e:
+            print(f"   ❌ Error al leer imagen: {e}")
+            continue
+        
+        # Detectar media type por extensión
+        if archivo.lower().endswith(".png"):
+            media_type = "image/png"
+        elif archivo.lower().endswith(".jpg") or archivo.lower().endswith(".jpeg"):
+            media_type = "image/jpeg"
+        else:
+            media_type = "image/png"  # fallback
+        
+        # Extraer JSON con Claude
+        try:
+            data = extract_json_from_image_bytes(image_bytes, media_type)
         except Exception as e:
             print(f"   ❌ Error al extraer JSON: {e}")
             continue
+        
+        # --- SUBIR IMAGEN A R2 ---
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder = "ocr_claude"
+        # Usar el nombre del archivo sin extensión como base
+        base_name = os.path.splitext(archivo)[0]
+        filename = f"{base_name}_{timestamp}.png"
+        imagen_url = save_image(image_bytes, folder, filename)
+        print(f"   📸 Imagen subida: {imagen_url}")
         
         farmacia = data.get('farmacia', 'Farmacia Claude')
         ciudad = data.get('ciudad')
@@ -129,7 +157,8 @@ def procesar_carpeta_claude(carpeta="data/imagenes_prueba", guardar=True):
                 'vigencia': vigencia or med.get('vigencia'),
                 'url': None,
                 'fuente': 'ocr_claude',
-                'fecha': datetime.now().isoformat()
+                'fecha': datetime.now().isoformat(),
+                'imagen_url': imagen_url   # <--- NUEVO
             }
             if guardar:
                 try:
@@ -153,5 +182,12 @@ if __name__ == "__main__":
     print(f"\n✅ Total guardados por Claude: {total}")
     
     print("\n📊 Conteo por fuente:")
-    for row in contar_por_fuente():
-        print(f"  {row['fuente']}: {row['total']}")
+    try:
+        fuente_counts = contar_por_fuente()
+        if fuente_counts:
+            for fuente, total in fuente_counts.items():
+                print(f"  {fuente}: {total}")
+        else:
+            print("  No hay registros.")
+    except Exception as e:
+        print(f"Error al contar: {e}")

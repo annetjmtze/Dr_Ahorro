@@ -1,46 +1,49 @@
-import boto3
-from datetime import datetime
 import os
-from botocore.exceptions import ClientError
+import boto3
+from botocore.config import Config
+from pathlib import Path
+import logging
 
-def get_r2_client():
-    """Retorna un cliente boto3 configurado para Cloudflare R2."""
-    return boto3.client(
-        's3',
-        endpoint_url=os.getenv('R2_ENDPOINT_URL'),   # Ej: https://<account_id>.r2.cloudflarestorage.com
-        aws_access_key_id=os.getenv('R2_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.getenv('R2_SECRET_ACCESS_KEY'),
-        region_name='auto'  # Recomendado para R2
+logger = logging.getLogger(__name__)
+
+USE_R2 = os.getenv("USE_R2", "false").lower() == "true"
+R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
+
+if USE_R2:
+    s3_client = boto3.client(
+        "s3",
+        endpoint_url=R2_ENDPOINT_URL,
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        config=Config(signature_version="s3v4"),
     )
 
-def subir_imagen(imagen_bytes, farmacia, medicamento):
+def save_image(image_bytes: bytes, folder: str, filename: str) -> str:
     """
-    Sube una imagen a R2 y devuelve el key (nombre del objeto) para guardar en BD.
-    
-    Args:
-        imagen_bytes (bytes): Datos binarios de la imagen (PNG).
-        farmacia (str): Nombre de la farmacia (ej. "farmacia_guadalajara").
-        medicamento (str): Nombre del medicamento (ej. "paracetamol").
-    
-    Returns:
-        str: Key del objeto en R2, ej. "screenshots/farmacia_guadalajara/paracetamol/2026-07-22_14-30.png".
+    Guarda la imagen en R2 o localmente según USE_R2.
+    Retorna la URL pública (si R2) o la ruta local (si no).
     """
-    # Limpiar caracteres problemáticos y formatear fecha
-    farmacia_clean = farmacia.replace(' ', '_').lower()
-    medicamento_clean = medicamento.replace(' ', '_').lower()
-    fecha = datetime.now().strftime('%Y-%m-%d_%H-%M')
-    key = f"screenshots/{farmacia_clean}/{medicamento_clean}/{fecha}.png"
-    
-    client = get_r2_client()
-    try:
-        client.put_object(
-            Bucket=os.getenv('R2_BUCKET_NAME'),
+    if USE_R2:
+        key = f"{folder}/{filename}"
+        s3_client.put_object(
+            Bucket=R2_BUCKET_NAME,
             Key=key,
-            Body=imagen_bytes,
-            ContentType='image/png'
+            Body=image_bytes,
+            ContentType="image/png",
+            ACL="public-read",
         )
-        return key
-    except ClientError as e:
-        # Log del error (puedes usar logging o print)
-        print(f"Error subiendo imagen a R2: {e}")
-        raise
+        url = f"{R2_ENDPOINT_URL}/{R2_BUCKET_NAME}/{key}"
+        logger.info(f"📸 Subido a R2: {url}")
+        return url
+    else:
+        # Modo local (para desarrollo)
+        local_dir = Path("data/screenshots") / folder
+        local_dir.mkdir(parents=True, exist_ok=True)
+        local_path = local_dir / filename
+        with open(local_path, "wb") as f:
+            f.write(image_bytes)
+        logger.info(f"📸 Guardado local: {local_path}")
+        return str(local_path.absolute())
