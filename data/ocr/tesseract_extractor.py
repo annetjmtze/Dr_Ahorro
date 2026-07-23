@@ -1,25 +1,36 @@
 # data/ocr/tesseract_extractor.py
 import os
+import sys
 import re
 from datetime import datetime
 from PIL import Image, ImageEnhance
 import pytesseract
+from dotenv import load_dotenv
 
-# Añadir ruta de data para importar módulos
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# ── Asegurar que la raíz del proyecto está en sys.path ──
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-from storage.r2_client import save_image
-from database import save_precio, init_db, contar_por_fuente
+# ── Cargar variables de entorno ──
+load_dotenv(os.path.join(ROOT_DIR, '.env'))
 
-# Configurar ruta de Tesseract (ajústala si es necesario)
-# En Railway/Linux, normalmente está en /usr/bin/tesseract
+# ── Importar módulos del proyecto ──
+from data.storage.r2_client import save_image
+from data.database import save_precio, init_db, contar_por_fuente
+
+# ── Configurar ruta de Tesseract ──
 if sys.platform == "win32":
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 else:
-    # En Linux, suele estar en el PATH, pero podemos forzar si es necesario
+    # En Linux (Railway) normalmente está en el PATH
+    # Si no, descomenta y ajusta la ruta:
     # pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
     pass
+
+# ─────────────────────────────────────────────────────────────
+# FUNCIONES DE PREPROCESAMIENTO Y EXTRACCIÓN
+# ─────────────────────────────────────────────────────────────
 
 def preprocess(image_path):
     """Mejora el contraste de la imagen para OCR."""
@@ -80,16 +91,20 @@ def parsear_texto_a_precios(texto, farmacia_default="Farmacia OCR", imagen_url=N
                 'url': None,
                 'fuente': 'ocr_tesseract',
                 'fecha': datetime.now().isoformat(),
-                'imagen_url': imagen_url   # <--- NUEVO
+                'imagen_url': imagen_url   # <--- CLAVE: URL de la imagen
             })
     return resultados
 
+# ─────────────────────────────────────────────────────────────
+# PROCESAR Y GUARDAR IMAGEN
+# ─────────────────────────────────────────────────────────────
+
 def procesar_y_guardar(image_path, farmacia="Farmacia OCR"):
     """
-    Extrae texto de la imagen, sube la imagen a R2, parsea precios y guarda en BD.
+    Extrae texto de la imagen, sube la imagen a R2 (o local), parsea precios y guarda en BD.
     Retorna la lista de registros guardados.
     """
-    # --- LEER LA IMAGEN Y SUBIR A R2 ---
+    # ── LEER LA IMAGEN Y SUBIR A R2 (o guardar localmente) ──
     try:
         with open(image_path, "rb") as f:
             image_bytes = f.read()
@@ -97,13 +112,13 @@ def procesar_y_guardar(image_path, farmacia="Farmacia OCR"):
         print(f"⚠️ Error al leer imagen {image_path}: {e}")
         return []
     
-    # Subir a R2
+    # Subir a R2 (o guardar localmente)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     folder = "ocr_tesseract"
     base_name = os.path.splitext(os.path.basename(image_path))[0]
     filename = f"{base_name}_{timestamp}.png"
     imagen_url = save_image(image_bytes, folder, filename)
-    print(f"   📸 Imagen subida: {imagen_url}")
+    print(f"   📸 Imagen guardada: {imagen_url}")
     
     # Extraer texto con Tesseract
     texto = extract_text(image_path)
@@ -119,6 +134,10 @@ def procesar_y_guardar(image_path, farmacia="Farmacia OCR"):
         except Exception as e:
             print(f"⚠️ Error guardando: {e}")
     return registros
+
+# ─────────────────────────────────────────────────────────────
+# EJECUCIÓN PRINCIPAL
+# ─────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     # Inicializar BD
