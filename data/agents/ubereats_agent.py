@@ -1,9 +1,5 @@
-import os
-# ── FORZAR USO DE CHROME ──
-os.environ['PLAYWRIGHT_BROWSERS_PATH'] = '/usr/bin'
-os.environ['CHROME_PATH'] = '/usr/bin/google-chrome-stable'
-
 import asyncio
+import os
 import sys
 import json
 import re
@@ -35,15 +31,11 @@ class UberEatsAgent:
 
     async def _load_cookies(self, context):
         if not os.path.exists(self.cookies_file):
-            logger.warning(f"⚠️ No se encontró archivo de cookies: {self.cookies_file}. Continuando sin autenticación.")
-            return
-        try:
-            with open(self.cookies_file, 'r') as f:
-                cookies = json.load(f)
-            await context.add_cookies(cookies)
-            logger.info(f"🍪 {len(cookies)} cookies cargadas.")
-        except Exception as e:
-            logger.warning(f"⚠️ Error cargando cookies: {e}. Continuando sin autenticación.")
+            raise FileNotFoundError(f"No se encontró el archivo: {self.cookies_file}")
+        with open(self.cookies_file, 'r') as f:
+            cookies = json.load(f)
+        await context.add_cookies(cookies)
+        logger.info(f"🍪 {len(cookies)} cookies cargadas.")
 
     async def _close_cookie_banner(self, page):
         try:
@@ -62,9 +54,8 @@ class UberEatsAgent:
 
     async def search_medication(self, medication: str) -> Optional[Dict[str, Any]]:
         async with async_playwright() as p:
-            # ── USAR GOOGLE CHROME ──
             browser = await p.chromium.launch(
-                channel="chrome",  # usa Chrome del sistema
+                channel="chrome",
                 headless=self.headless,
                 args=["--disable-blink-features=AutomationControlled"]
             )
@@ -103,16 +94,19 @@ class UberEatsAgent:
                 await asyncio.sleep(5)
                 await self._close_cookie_banner(page)
 
-                # ── Obtener items ──
+                # ── Obtener items (filtrando elementos no relevantes) ──
                 raw_items = await page.query_selector_all("div[data-testid='store-item'], div[data-testid='feed-item'], article, section, li")
                 logger.info(f"📦 Encontrados {len(raw_items)} elementos candidatos.")
 
+                # Filtrar: solo quedarnos con los que parecen ser tiendas
                 items = []
                 for el in raw_items:
                     try:
                         text = await el.inner_text()
+                        # Ignorar elementos de navegación o accesibilidad
                         if "Ir al contenido" in text or "Menu" in text or "Buscar" in text:
                             continue
+                        # Debe tener un nombre de tienda (OXXO, Farmacias, etc.) o un precio
                         if "OXXO" in text or "Farmacias" in text or "Costo de envío" in text or "MX$" in text or "$" in text:
                             items.append(el)
                     except:
@@ -125,10 +119,10 @@ class UberEatsAgent:
                     with open("ubereats_debug.html", "w", encoding="utf-8") as f:
                         f.write(html_debug)
                     await page.screenshot(path="ubereats_no_items.png")
-                    logger.warning("No se encontraron items relevantes.")
-                    await browser.close()
+                    logger.warning("No se encontraron items relevantes. HTML guardado.")
                     return None
 
+                # ── Tomar el primer item relevante ──
                 first_item = items[0]
                 item_text = await first_item.inner_text()
                 logger.info(f"📝 Primer item: {item_text[:200]}...")
@@ -162,7 +156,7 @@ class UberEatsAgent:
                 try:
                     lines = item_text.split('\n')
                     for line in lines:
-                        if medication.lower() in line.lower():
+                        if "paracetamol" in line.lower() or "tylenol" in line.lower() or "analgésico" in line.lower():
                             nombre = line.strip()
                             break
                 except:
@@ -171,34 +165,13 @@ class UberEatsAgent:
                 # ── Link ──
                 href = None
                 try:
-                    link_elem = await first_item.query_selector("a[href*='/store/'], a[href*='/item/'], a[href*='/restaurant/']")
-                    if not link_elem:
-                        link_elem = await first_item.query_selector("a")
+                    link_elem = await first_item.query_selector("a")
                     if link_elem:
                         href = await link_elem.get_attribute("href")
-                        if href:
-                            if 'add-product' in href or 'icon' in href:
-                                href = None
-                            elif not href.startswith("http"):
-                                href = "https://www.ubereats.com" + href
+                        if href and not href.startswith("http"):
+                            href = "https://www.ubereats.com" + href
                 except:
                     pass
-
-                if not href:
-                    try:
-                        logger.info("🖱️ Intentando obtener link mediante clic en el producto...")
-                        async with page.expect_navigation(timeout=15000) as nav_info:
-                            await first_item.click()
-                        href = page.url
-                        if '/store/' in href or '/item/' in href:
-                            logger.info(f"✅ Link obtenido por clic: {href}")
-                            await page.go_back()
-                            await page.wait_for_load_state("networkidle")
-                            await self._random_pause()
-                        else:
-                            href = None
-                    except Exception as e:
-                        logger.warning(f"Error en clic: {e}")
 
                 # ── Screenshot ──
                 screenshot_bytes = await page.screenshot(full_page=False)

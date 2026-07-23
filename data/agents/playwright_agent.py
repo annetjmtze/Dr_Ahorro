@@ -95,6 +95,7 @@ FARMACIAS = [
         "result_container": ".product",
         "fallback_url": None,
     },
+    # ── NUEVAS FARMACIAS ────────────────────────────────
     {
         "nombre": "Farmacias Similares",
         "url": "https://www.farmaciasdesimilares.com/",
@@ -106,9 +107,9 @@ FARMACIAS = [
         "result_container": ".product",
         "fallback_url": "https://www.farmaciasdesimilares.com/paracetamol-500-mg",
     },
-    {
+        {
         "nombre": "Farmacias San Pablo",
-        "url": "https://www.farmaciasanpablo.com.mx/",
+        "url": "https://www.farmaciasanpablo.com.mx/",   # página principal (puede bloquear)
         "price_selectors": [
             ".price-box .price",
             ".product-price",
@@ -116,6 +117,7 @@ FARMACIAS = [
             ".regular-price",
         ],
         "result_container": None,
+        # Sustituye por una URL de producto que muestre precio (ej. paracetamol)
         "fallback_url": "https://www.farmaciasanpablo.com.mx/medicamentos/genericos/m---n---o---p/paracetamol-500-0-mg/p/000000000070007368",
     },
     {
@@ -211,22 +213,18 @@ def extraer_precio_regex(texto: str) -> Optional[float]:
         r'\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2}))',
         r'\$\s*(\d+(?:\.\d{2})?)',
         r'(\d+\.\d{2})\s*\$',
-        r'(\d+\.\d{2})',
     ]
     for patron in patrones:
         match = re.search(patron, texto)
         if match:
             precio_str = match.group(1).replace(',', '')
-            try:
-                return float(precio_str)
-            except ValueError:
-                continue
+            return float(precio_str)
     return None
 
 async def extraer_precio_directo(page, selectors: list) -> Optional[float]:
     for selector in selectors:
         try:
-            element = await page.wait_for_selector(selector, timeout=3000)
+            element = await page.wait_for_selector(selector, timeout=5000)
             if element:
                 texto = await element.inner_text()
                 limpio = re.sub(r'[^\d.]', '', texto)
@@ -304,7 +302,7 @@ async def extraer_datos(page, image_bytes: bytes, farmacia_nombre: str, price_se
             if precio:
                 logger.info(f"   Regex encontró precio: ${precio}")
         except Exception as e:
-            logger.warning(f"Error en regex: {e}")
+            logger.warning(f"Error regex: {e}")
 
     if not precio:
         logger.info("   Intentando extraer precio desde HTML crudo (JSON-LD)...")
@@ -391,7 +389,7 @@ async def capturar_precio(farmacia: dict, medicamento: str, headless: bool = Tru
                         break
                     except Exception:
                         continue
-                await asyncio.sleep(random.uniform(1, 2))
+                await asyncio.sleep(1)
             else:
                 logger.info("   Usando URL de producto de respaldo...")
                 if farmacia.get("fallback_url"):
@@ -421,11 +419,7 @@ async def capturar_precio(farmacia: dict, medicamento: str, headless: bool = Tru
             return datos
 
         except Exception as e:
-            logger.error(f"❌ Error en {nombre}: {e}", exc_info=True)
-            try:
-                await page.screenshot(path=f"error_{nombre.lower().replace(' ', '_')}.png")
-            except:
-                pass
+            logger.error(f"❌ Error en {nombre}: {e}")
             await browser.close()
             return None
 

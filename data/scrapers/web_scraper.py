@@ -2,33 +2,20 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import re
-import logging
 from datetime import datetime
 import sys
 import os
-from urllib.parse import urlparse
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
 
-# ── Cargar variables de entorno ──
-from dotenv import load_dotenv
-load_dotenv()  # Busca .env en la raíz del proyecto
+# Añadir ruta para importar desde data/
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# ── Configurar logging ──
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("web_scraper")
-
-# ── Asegurar que la raíz del proyecto está en sys.path ──
-# Esto funciona tanto localmente como en Railway (donde la raíz es /app)
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
-# ── Importar módulos del proyecto ──
+# Importar funciones de almacenamiento (R2 o local)
 from data.storage.r2_client import save_image, USE_R2
 from data.database import save_precio, init_db, contar_por_fuente
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FUNCIÓN PARA TOMAR SCREENSHOT CON PLAYWRIGHT (SYNC)
-# ──────────────────────────────────────────────────────────────────────────────
+# -------------------- FUNCIÓN PARA TOMAR SCREENSHOT CON PLAYWRIGHT (SYNC) --------------------
 def tomar_screenshot_sync(url):
     """
     Toma un screenshot de la URL usando Playwright (modo síncrono).
@@ -46,7 +33,8 @@ def tomar_screenshot_sync(url):
             )
             page = context.new_page()
             page.goto(url, timeout=30000)
-            page.wait_for_timeout(2000)  # esperar carga
+            # Esperar un poco a que cargue todo
+            page.wait_for_timeout(2000)
             screenshot_bytes = page.screenshot(full_page=True)
             browser.close()
             return screenshot_bytes
@@ -54,9 +42,7 @@ def tomar_screenshot_sync(url):
         logger.error(f"❌ Error al tomar screenshot de {url}: {e}")
         return None
 
-# ──────────────────────────────────────────────────────────────────────────────
-# FUNCIONES AUXILIARES
-# ──────────────────────────────────────────────────────────────────────────────
+# -------------------- FUNCIÓN AUXILIAR DE LIMPIEZA --------------------
 def limpiar_precio(texto):
     """Limpia caracteres no numéricos y convierte a float."""
     if not texto:
@@ -77,42 +63,38 @@ def validar_url(url):
     except:
         return False
 
-# ──────────────────────────────────────────────────────────────────────────────
-# GUARDAR EN BD CON IMAGEN_URL
-# ──────────────────────────────────────────────────────────────────────────────
+# -------------------- FUNCIÓN PARA GUARDAR EN BD (CON IMAGEN) --------------------
 def guardar_resultado(datos):
+    """
+    Guarda un resultado en la base de datos usando el schema definido.
+    datos: diccionario con los campos necesarios.
+    """
     try:
+        # Asegurar que 'fuente' esté definido
         if 'fuente' not in datos or datos['fuente'] is None:
-            datos['fuente'] = 'farmacia'
-        
-        if datos.get('url_producto') and not validar_url(datos['url_producto']):
-            logger.warning(f"URL inválida: {datos['url_producto']} - se guardará sin URL")
-            datos['url_producto'] = None
+            datos['fuente'] = 'farmacia'  # Por defecto
 
         registro = {
             "medicamento": datos.get("medicamento_buscado", "desconocido"),
             "nombre_raw": datos.get("nombre_en_farmacia"),
             "farmacia": datos.get("farmacia"),
-            "ciudad": None,
+            "ciudad": None,  # No tenemos ciudad en scraping
             "precio": datos.get("precio"),
             "precio_promo": datos.get("precio_promo"),
             "vigencia": datos.get("vigencia_promo"),
             "url": datos.get("url_producto"),
             "fuente": datos.get("fuente"),
             "fecha": datos.get("fecha_consulta", datetime.now().isoformat()),
-            "imagen_url": datos.get("imagen_url")   # <--- CLAVE
+            "imagen_url": datos.get("imagen_url")   # <--- NUEVO: guardar URL de la imagen
         }
         save_precio(registro)
         logger.info(f"💾 Guardado en BD: {registro['farmacia']} - ${registro['precio']} (fuente: {registro['fuente']})")
         if registro.get("imagen_url"):
             logger.info(f"   📸 Imagen: {registro['imagen_url']}")
     except Exception as e:
-        logger.error(f"⚠️ Error al guardar en BD: {e}")
+        print(f"⚠️ Error al guardar en BD: {e}")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SCRAPERS ESPECÍFICOS
-# ──────────────────────────────────────────────────────────────────────────────
-
+# -------------------- FARMACIAS DEL AHORRO --------------------
 def scrape_ahorro(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -134,6 +116,7 @@ def scrape_ahorro(url):
 
         promo_elem = soup.select_one('.special-price .price')
         precio_promo = limpiar_precio(promo_elem.text) if promo_elem else None
+
         vigencia = None
 
         name_elem = soup.select_one('h1.page-title span')
@@ -141,7 +124,7 @@ def scrape_ahorro(url):
             name_elem = soup.select_one('h1 span')
         nombre = name_elem.text.strip() if name_elem else "Paracetamol 500 mg"
 
-        # Screenshot y subida a R2
+        # --- TOMAR SCREENSHOT Y SUBIR A R2 ---
         screenshot_bytes = tomar_screenshot_sync(url)
         imagen_url = None
         if screenshot_bytes:
@@ -160,16 +143,17 @@ def scrape_ahorro(url):
             "url_producto": url,
             "fuente": "farmacia",
             "fecha_consulta": datetime.now().isoformat(),
-            "imagen_url": imagen_url
+            "imagen_url": imagen_url   # <--- NUEVO
         }
 
         if precio is not None:
             guardar_resultado(resultado)
         return resultado
     except Exception as e:
-        logger.error(f"❌ Error en Farmacias del Ahorro: {e}")
+        print(f"❌ Error en Farmacias del Ahorro: {e}")
         return None
 
+# -------------------- BENAVIDES --------------------
 def scrape_benavides(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -213,7 +197,7 @@ def scrape_benavides(url):
             name_elem = soup.select_one('h1 span')
         nombre = name_elem.text.strip() if name_elem else "Perfalgan Paracetamol"
 
-        # Screenshot y subida a R2
+        # --- TOMAR SCREENSHOT Y SUBIR A R2 ---
         screenshot_bytes = tomar_screenshot_sync(url)
         imagen_url = None
         if screenshot_bytes:
@@ -232,16 +216,17 @@ def scrape_benavides(url):
             "url_producto": url,
             "fuente": "farmacia",
             "fecha_consulta": datetime.now().isoformat(),
-            "imagen_url": imagen_url
+            "imagen_url": imagen_url   # <--- NUEVO
         }
 
         if precio is not None:
             guardar_resultado(resultado)
         return resultado
     except Exception as e:
-        logger.error(f"❌ Error en Farmacias Benavides: {e}")
+        print(f"❌ Error en Farmacias Benavides: {e}")
         return None
 
+# -------------------- PROBEMEDIC (NUEVA) --------------------
 def scrape_probemedic(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -266,8 +251,6 @@ def scrape_probemedic(url):
         title = soup.find('title')
         nombre = title.text.strip() if title else "Paracetamol 500mg 10 tabletas"
 
-        # Detectar medicamento
-        medicamento = "desconocido"
         if "paracetamol" in nombre.lower():
             medicamento = "paracetamol"
         elif "ibuprofeno" in nombre.lower():
@@ -276,14 +259,10 @@ def scrape_probemedic(url):
             medicamento = "fluoxetina"
         elif "diclofenaco" in nombre.lower():
             medicamento = "diclofenaco"
-        elif "loratadina" in nombre.lower():
-            medicamento = "loratadina"
-        elif "metformina" in nombre.lower():
-            medicamento = "metformina"
-        elif "celecoxib" in nombre.lower():
-            medicamento = "celecoxib"
+        else:
+            medicamento = "desconocido"
 
-        # Screenshot y subida a R2
+        # --- TOMAR SCREENSHOT Y SUBIR A R2 ---
         screenshot_bytes = tomar_screenshot_sync(url)
         imagen_url = None
         if screenshot_bytes:
@@ -302,23 +281,33 @@ def scrape_probemedic(url):
             "url_producto": url,
             "fuente": "farmacia",
             "fecha_consulta": datetime.now().isoformat(),
-            "imagen_url": imagen_url
+            "imagen_url": imagen_url   # <--- NUEVO
         }
 
         if precio is not None:
             guardar_resultado(resultado)
         return resultado
     except Exception as e:
-        logger.error(f"❌ Error en Probemedic: {e}")
+        print(f"❌ Error en Probemedic: {e}")
         return None
 
-# ──────────────────────────────────────────────────────────────────────────────
-# EJECUCIÓN PRINCIPAL
-# ──────────────────────────────────────────────────────────────────────────────
-def main():
-    init_db()
-    logger.info("📦 Base de datos inicializada")
+# -------------------- RAPPI (asíncrono, ya existente) --------------------
+async def scrape_rappi_async(url):
+    # ... (sin cambios, ya guarda imagen en su propio flujo)
+    pass
 
+# -------------------- UBER EATS (asíncrono, ya existente) --------------------
+async def scrape_ubereats_async(url):
+    # ... (sin cambios, ya guarda imagen en su propio flujo)
+    pass
+
+# -------------------- EJECUCIÓN PRINCIPAL --------------------
+if __name__ == "__main__":
+    # Inicializar base de datos
+    init_db()
+    print("📦 Base de datos inicializada")
+
+    # Productos de Probemedic (todos funcionan)
     urls_probemedic = [
         "https://www.probemedic.mx/paracetamol-500mg-10-tabletas.html",
         "https://www.probemedic.mx/ibuprofeno-800-mg-10-tabletas.html",
@@ -329,48 +318,73 @@ def main():
         "https://www.probemedic.mx/celecoxib-200-mg-10-capsulas.html"
     ]
 
+    # Otras farmacias
     urls_otras = {
         "ahorro": "https://www.fahorro.com/paracetamol-500-mg-oral-20-tabletas-marca-del-ahorro.html",
         "benavides": "https://www.benavides.com.mx/perfalgan-paracetamol-1-ud-frasco-ampula"
     }
 
+    # URLs de ejemplo para Rappi y Uber Eats (reemplaza con las reales)
+    urls_delivery = {
+        "rappi": "https://www.rappi.com.mx/tienda/farmacias-del-ahorro/paracetamol-500-mg-20-tabletas/p",
+        "ubereats": "https://www.ubereats.com/mx/store/farmacias-del-ahorro/paracetamol-500-mg-20-tabletas"
+    }
+
     resultados = []
 
-    logger.info("🔍 Scrapeando Farmacias del Ahorro...")
+    # Scrapear farmacias físicas
+    print("\n🔍 Scrapeando Farmacias del Ahorro...")
     res_ahorro = scrape_ahorro(urls_otras["ahorro"])
     if res_ahorro:
         resultados.append(res_ahorro)
+        print("✅ Farmacias del Ahorro OK")
 
-    logger.info("🔍 Scrapeando Farmacias Benavides...")
+    print("\n🔍 Scrapeando Farmacias Benavides...")
     res_benav = scrape_benavides(urls_otras["benavides"])
     if res_benav:
         resultados.append(res_benav)
+        print("✅ Farmacias Benavides OK")
 
-    logger.info("🔍 Scrapeando Probemedic...")
+    print("\n🔍 Scrapeando Probemedic...")
     for url in urls_probemedic:
-        logger.info(f"  - {url.split('/')[-1]}...")
+        print(f"  - {url.split('/')[-1]}...")
         res_prob = scrape_probemedic(url)
         if res_prob:
             resultados.append(res_prob)
-            logger.info(f"    ✅ OK: ${res_prob['precio']}")
+            print(f"    ✅ OK: ${res_prob['precio']}")
         else:
-            logger.warning(f"    ❌ Falló")
+            print(f"    ❌ Falló")
 
+    # Scrapear delivery (Rappi y Uber Eats) - comentado por ahora
+    # print("\n🔍 Scrapeando Rappi...")
+    # res_rappi = scrape_rappi(urls_delivery["rappi"])
+    # if res_rappi:
+    #     resultados.append(res_rappi)
+    #     print("✅ Rappi OK")
+
+    # print("\n🔍 Scrapeando Uber Eats...")
+    # res_uber = scrape_ubereats(urls_delivery["ubereats"])
+    # if res_uber:
+    #     resultados.append(res_uber)
+    #     print("✅ Uber Eats OK")
+
+    # Guardar en JSON
     if resultados:
         os.makedirs("data/scrapers", exist_ok=True)
         with open("data/scrapers/resultados_farmacias.json", "w", encoding="utf-8") as f:
             json.dump(resultados, f, indent=2, ensure_ascii=False)
-        logger.info(f"📁 {len(resultados)} resultados guardados en data/scrapers/resultados_farmacias.json")
-        logger.info("📋 Resumen:")
+        print(f"\n📁 {len(resultados)} resultados guardados en data/scrapers/resultados_farmacias.json")
+        print("\n📋 Resumen:")
         for r in resultados:
-            logger.info(f"  - {r['farmacia']}: ${r['precio']} - {r['nombre_en_farmacia']} (fuente: {r['fuente']})")
+            print(f"  - {r['farmacia']}: ${r['precio']} - {r['nombre_en_farmacia']} (fuente: {r['fuente']})")
     else:
-        logger.warning("❌ No se obtuvo ningún resultado.")
+        print("❌ No se obtuvo ningún resultado.")
 
+    # Verificar registros en BD por fuente
+    logger.info("📊 Registros en base de datos por fuente:")
     try:
         fuente_counts = contar_por_fuente()
         if fuente_counts:
-            logger.info("📊 Registros en BD por fuente:")
             for fuente, total in fuente_counts.items():
                 logger.info(f"  {fuente}: {total}")
         else:
