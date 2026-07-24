@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Limpia duplicados de la tabla precios en PostgreSQL.
-Mantiene el registro con el ID más alto (más reciente) para cada
-combinación de medicamento, farmacia y fecha (sin hora).
-"""
 import os
 import sys
 import psycopg
@@ -11,7 +6,7 @@ from psycopg.rows import dict_row
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    print("❌ DATABASE_URL no está configurada")
+    print("❌ DATABASE_URL no configurada")
     sys.exit(1)
 
 def main():
@@ -19,15 +14,13 @@ def main():
     conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
     cur = conn.cursor()
 
-    # Identificar duplicados (agrupar por medicamento, farmacia, fecha sin hora)
-    # Usamos SUBSTRING(fecha, 1, 10) porque fecha es TEXT con formato 'YYYY-MM-DD HH:MM:SS'
-    print("🔍 Buscando duplicados...")
+    print("🔍 Identificando duplicados (agrupando por medicamento, farmacia y fecha sin hora)...")
     cur.execute("""
         SELECT id
         FROM (
             SELECT id,
                    ROW_NUMBER() OVER (
-                       PARTITION BY medicamento, farmacia, SUBSTRING(fecha, 1, 10)
+                       PARTITION BY medicamento, farmacia, SPLIT_PART(fecha, 'T', 1)
                        ORDER BY id DESC
                    ) AS rn
             FROM precios
@@ -37,14 +30,14 @@ def main():
     rows = cur.fetchall()
 
     if not rows:
-        print("✅ No hay duplicados para eliminar")
+        print("✅ No hay duplicados")
         conn.close()
         return
 
     ids = [row["id"] for row in rows]
     print(f"🔍 Se encontraron {len(ids)} duplicados para eliminar")
 
-    # Eliminar en lotes de 100 para no saturar la conexión
+    # Eliminar en lotes de 100
     batch_size = 100
     total_eliminados = 0
     total_lotes = (len(ids) + batch_size - 1) // batch_size
@@ -60,6 +53,23 @@ def main():
         print(f"   ✅ Lote {lote_actual}/{total_lotes}: eliminados {eliminados} registros")
 
     print(f"✅ Total eliminados: {total_eliminados}")
+
+    # Verificar que no queden duplicados
+    cur.execute("""
+        SELECT farmacia, medicamento, COUNT(*) as duplicados
+        FROM precios
+        WHERE medicamento = 'paracetamol'
+        GROUP BY farmacia, medicamento
+        HAVING COUNT(*) > 1
+    """)
+    restantes = cur.fetchall()
+    if restantes:
+        print("⚠️ Aún quedan duplicados:")
+        for row in restantes:
+            print(f"   {row['farmacia']}: {row['duplicados']}")
+    else:
+        print("✅ Todos los duplicados han sido eliminados.")
+
     conn.close()
 
 if __name__ == "__main__":
