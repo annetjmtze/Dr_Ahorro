@@ -357,12 +357,11 @@ def whatsapp_webhook():
                     filtrados_precio.append(p)
                 else:
                     logging.info(f"Descartado por precio anómalo: ${p['precio']} para {medicamento_ref}")
-
             mejores = {}
             for p in filtrados_precio:
-                farmacia_norm = normalizar_farmacia(p['farmacia']).lower()
-                if farmacia_norm not in mejores or p['fecha'] > mejores[farmacia_norm]['fecha']:
-                    mejores[farmacia_norm] = p
+                key = (p['farmacia'].lower(), p.get('fuente', '').lower())
+                if key not in mejores or p['fecha'] > mejores[key]['fecha']:
+                    mejores[key] = p
             precios_depurados = list(mejores.values())
             logging.info(f"Después de deduplicación: {len(precios_depurados)}")
         finally:
