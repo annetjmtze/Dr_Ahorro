@@ -191,7 +191,7 @@ def limpiar_contexto_expirado():
         del user_context[k]
 
 # ------------------------------------------------------------
-#  FUNCIÓN DE FORMATEO (MEJORADA)
+#  FUNCIÓN DE FORMATEO (MEJORADA CON DELIVERY)
 # ------------------------------------------------------------
 def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -> str:
     lines = []
@@ -213,6 +213,7 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -
     else:
         lines.append("📍 No hay farmacias físicas con precios recientes.\n")
 
+    # --- SECCIÓN DE DELIVERY (MEJORADA) ---
     if delivery:
         plataformas = set()
         for p in delivery:
@@ -237,7 +238,9 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -
         for p in delivery[:3]:
             fuente = p['fuente'].lower()
             url = p.get('url') or p.get('link_producto')
-            if not url or 'add-product-icon' in url:
+            
+            # Si la URL es inválida o contiene 'add-product-icon', generar búsqueda
+            if not url or 'add-product-icon' in url or url == '#':
                 busqueda = nombre_generico.replace(' ', '+')
                 if 'rappi' in fuente:
                     url = f"https://www.rappi.com.mx/search?q={busqueda}"
@@ -303,8 +306,7 @@ def whatsapp_webhook():
         if not incoming_msg:
             msg.body("Por favor, envía el nombre de un medicamento.")
             return Response(str(resp), mimetype="application/xml")
-
-        # ---------- Manejo de preguntas de seguimiento ----------
+                # ---------- Manejo de preguntas de seguimiento ----------
         contexto = user_context.get(sender)
         if contexto:
             pregunta = incoming_msg.lower()
@@ -313,8 +315,10 @@ def whatsapp_webhook():
                 respuesta = manejar_pregunta_seguimiento(pregunta, contexto)
                 msg.body(respuesta)
                 return Response(str(resp), mimetype="application/xml")
+            # Si no es palabra clave de seguimiento, ignoramos el contexto
+            # y continuamos con el flujo normal (nueva búsqueda)
         # ---------------------------------------------------------
-
+      
         # Procesar nueva búsqueda
         resultado = normalizer.normalizar(incoming_msg)
         if "error" in resultado:
@@ -349,26 +353,27 @@ def whatsapp_webhook():
                 # Si es delivery, saltar el filtro de coherencia (nombre_raw puede no coincidir)
                 if p.get('fuente', '').lower() in ['agente_rappi', 'agente_ubereats']:
                     filtrados_coherencia.append(p)
+                    logging.info(f"✅ Delivery aceptado sin coherencia: {p.get('nombre_raw', '')[:40]}")
                 elif validar_coherencia_producto(p.get('nombre_raw', ''), medicamento_ref):
                     filtrados_coherencia.append(p)
                 else:
-                    logging.info(f"Descartado por incoherencia: {p.get('nombre_raw', '')[:40]} vs {medicamento_ref}")
+                    logging.info(f"❌ Descartado por incoherencia: {p.get('nombre_raw', '')[:40]} vs {medicamento_ref}")
 
             filtrados_precio = []
             for p in filtrados_coherencia:
                 if validar_precio(p['precio'], medicamento_ref, conn):
                     filtrados_precio.append(p)
                 else:
-                    logging.info(f"Descartado por precio anómalo: ${p['precio']} para {medicamento_ref}")
+                    logging.info(f"❌ Descartado por precio anómalo: ${p['precio']} para {medicamento_ref}")
 
-            # --- NUEVA DEDUPLICACIÓN POR FARMACIA + FUENTE ---
+            # --- DEDUPLICACIÓN POR FARMACIA + FUENTE ---
             mejores = {}
             for p in filtrados_precio:
                 key = (normalizar_farmacia(p['farmacia']).lower(), p.get('fuente', '').lower())
                 if key not in mejores or p['fecha'] > mejores[key]['fecha']:
                     mejores[key] = p
             precios_depurados = list(mejores.values())
-            logging.info(f"Después de deduplicación: {len(precios_depurados)}")
+            logging.info(f"📦 Después de deduplicación: {len(precios_depurados)}")
         finally:
             conn.close()
 
@@ -378,18 +383,19 @@ def whatsapp_webhook():
         farmacias.sort(key=lambda x: x['precio'])
         delivery.sort(key=lambda x: x['precio'])
 
+        # --- SIEMPRE guardar contexto (tanto si hay como si no hay resultados) ---
+        contexto_actual = {
+            'medicamento_buscado': nombre_ingresado,
+            'nombre_generico': nombre_generico,
+            'principio_activo': resultado.get('principio_activo', nombre_generico),
+            'requiere_receta': resultado.get('requiere_receta', False),
+            'alternativas': [],
+            'timestamp': datetime.now(timezone.utc)
+        }
+
         if farmacias or delivery:
             respuesta = formatear_respuesta(nombre_generico, farmacias, delivery)
             msg.body(respuesta)
-            # Guardar contexto
-            user_context[sender] = {
-                'medicamento_buscado': nombre_ingresado,
-                'nombre_generico': nombre_generico,
-                'principio_activo': resultado.get('principio_activo', nombre_generico),
-                'requiere_receta': resultado.get('requiere_receta', False),
-                'alternativas': [],
-                'timestamp': datetime.now(timezone.utc)
-            }
         else:
             # ---------- FALLBACK INTELIGENTE ----------
             principio_activo = obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresado)
@@ -400,8 +406,10 @@ def whatsapp_webhook():
             if alternativas:
                 logging.info(f"Primera alternativa: {alternativas[0]['nombre']} - ${alternativas[0]['precio']}")
 
-            requiere_receta = resultado.get('requiere_receta', False)
+            # Guardar alternativas en el contexto para preguntas de seguimiento
+            contexto_actual['alternativas'] = alternativas
 
+            requiere_receta = resultado.get('requiere_receta', False)
             mensaje = construir_mensaje_fallback(
                 nombre_ingresado,
                 nombre_generico,
@@ -411,15 +419,8 @@ def whatsapp_webhook():
             )
             msg.body(mensaje)
 
-            # Guardar contexto con alternativas
-            user_context[sender] = {
-                'medicamento_buscado': nombre_ingresado,
-                'nombre_generico': nombre_generico,
-                'principio_activo': principio_activo,
-                'requiere_receta': requiere_receta,
-                'alternativas': alternativas,
-                'timestamp': datetime.now(timezone.utc)
-            }
+        # Guardar el contexto SIEMPRE
+        user_context[sender] = contexto_actual
 
         if increment_and_check_limit():
             mensaje_limite = (
