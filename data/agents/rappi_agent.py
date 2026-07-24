@@ -11,9 +11,11 @@ from typing import Optional, Dict, Any
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from dotenv import load_dotenv
 
+# ── Configurar entorno ──
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT_DIR)
 from data.database import save_precio
+from data.storage.r2_client import save_image  # Importar para subir a R2
 
 load_dotenv(os.path.join(ROOT_DIR, '.env'))
 
@@ -21,7 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("rappi_agent")
 
 class RappiAgent:
-    def __init__(self, headless=False):
+    def __init__(self, headless: bool = False):
         self.headless = headless
         self.cookies_file = os.path.join(ROOT_DIR, "data", "auth", "cookies_rappi.json")
         os.makedirs(os.path.dirname(self.cookies_file), exist_ok=True)
@@ -111,73 +113,81 @@ class RappiAgent:
                 except:
                     nombre = medication
 
-                # ── LINK DEL PRODUCTO (corregido) ──
+                # ── LINK DEL PRODUCTO Y DEEP LINK ──
                 href = None
+                product_id = None
+                store_id = None
 
-                # 1. Método principal: extraer ID de la imagen (UUID)
+                # 1. Intentar obtener ID desde la imagen (más fiable)
                 try:
                     img = await product.query_selector("img")
                     if img:
                         src = await img.get_attribute("src")
                         if src:
-                            # Buscar UUID en la URL de la imagen
                             match = re.search(r'/products/([a-f0-9-]+)\.', src)
                             if match:
                                 product_id = match.group(1)
-                                # Generar slug a partir del nombre
-                                slug = nombre.lower().replace(' ', '-')
-                                slug = re.sub(r'[^a-z0-9-]', '', slug)  # Eliminar caracteres especiales
-                                href = f"https://www.rappi.com.mx/p/{slug}-{product_id}"
-                                logger.info(f"✅ Link construido desde imagen: {href}")
+                                logger.info(f"🔑 ID del producto (desde imagen): {product_id}")
                 except Exception as e:
-                    logger.warning(f"Error extrayendo de imagen: {e}")
+                    logger.warning(f"Error extrayendo ID de imagen: {e}")
 
-                # 2. Si falla, buscar un enlace <a> que contenga '/p/'
-                if not href:
+                # 2. Si no hay ID desde imagen, buscar en enlace <a>
+                if not product_id:
                     try:
                         link_element = await product.query_selector("a[href*='/p/']")
                         if link_element:
                             href = await link_element.get_attribute("href")
-                            logger.info(f"✅ Link encontrado en <a href>: {href}")
+                            match = re.search(r'/p/.*?-([a-f0-9-]+)$', href)
+                            if match:
+                                product_id = match.group(1)
+                                logger.info(f"🔑 ID del producto (desde href): {product_id}")
                     except Exception as e:
-                        logger.warning(f"Error buscando <a href>: {e}")
+                        logger.warning(f"Error buscando ID en href: {e}")
 
-                # 3. Último recurso: hacer clic en el producto y capturar URL
-                if not href:
-                    try:
-                        logger.info("🖱️ Intentando obtener link mediante clic en el producto...")
-                        # Hacer clic en el contenedor del producto
-                        async with page.expect_navigation(timeout=15000) as nav_info:
-                            await product.click()
-                        href = page.url
-                        if '/p/' in href:
-                            logger.info(f"✅ Link obtenido por clic: {href}")
-                            await page.go_back()
-                            await page.wait_for_load_state("networkidle")
-                            await self._random_pause()
-                        else:
-                            href = None
-                    except Exception as e:
-                        logger.warning(f"Error en clic: {e}")
+                # 3. Obtener store_id (para deep link con tienda)
+                try:
+                    store_link = await first_store.query_selector("a[href*='/store/']")
+                    if store_link:
+                        store_href = await store_link.get_attribute("href")
+                        match = re.search(r'/store/([^/?]+)', store_href)
+                        if match:
+                            store_id = match.group(1)
+                            logger.info(f"🏪 ID de la tienda: {store_id}")
+                except Exception as e:
+                    logger.warning(f"Error obteniendo store_id: {e}")
 
-                # ── FILTRO FINAL: descartar enlaces no válidos ──
-                if href:
-                    # Si contiene palabras clave de icono o no tiene '/p/', lo descartamos
-                    if 'add-product' in href or 'icon' in href or '/p/' not in href:
-                        logger.warning(f"⚠️ Enlace descartado (no válido): {href}")
-                        href = None
-                    # Completar URL si es relativa
-                    elif not href.startswith("http"):
+                # ── Construir links ──
+                # Link web (producto)
+                if product_id:
+                    slug = nombre.lower().replace(' ', '-')
+                    slug = re.sub(r'[^a-z0-9-]', '', slug)
+                    href = f"https://www.rappi.com.mx/p/{slug}-{product_id}"
+                    logger.info(f"✅ Link web construido: {href}")
+                else:
+                    # Fallback: usar el href encontrado
+                    if href and not href.startswith("http"):
                         href = "https://www.rappi.com.mx" + href
 
-                # ── Screenshot ──
+
+                # Deep link (para abrir en la app)
+                deep_link = None
+                if product_id:
+                    # Probar primero con el enlace web (universal)
+                    #deep_link = href  # El enlace web suele abrir la app automáticamente
+                    # O probar con el esquema rappi://
+                    deep_link = f"rappi://open?url={href}"
+                    # O con el formato alternativo
+                    # deep_link = f"rappi://product/{slug}-{product_id}"
+                    logger.info(f"🔗 Deep link generado: {deep_link}")
+
+                # ── SCREENSHOT Y SUBIDA A R2 ──
                 screenshot_bytes = await page.screenshot(full_page=False)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                screenshot_dir = os.path.join(ROOT_DIR, "data", "screenshots", "rappi")
-                os.makedirs(screenshot_dir, exist_ok=True)
-                screenshot_path = os.path.join(screenshot_dir, f"{medication.replace(' ', '_')}_{timestamp}.png")
-                with open(screenshot_path, "wb") as f:
-                    f.write(screenshot_bytes)
+                folder = f"rappi/{medication.replace(' ', '_')}"
+                filename = f"{timestamp}.png"
+                # Subir a R2 si está configurado, o guardar localmente
+                imagen_url = save_image(screenshot_bytes, folder, filename)
+                logger.info(f"📸 Imagen guardada: {imagen_url}")
 
                 resultado = {
                     "medicamento": medication,
@@ -185,11 +195,14 @@ class RappiAgent:
                     "precio": precio,
                     "precio_promo": None,
                     "link_producto": href,
+                    "deep_link": deep_link,
+                    "product_id": product_id,
+                    "store_id": store_id,
                     "plataforma": "rappi",
                     "entrega_estimada": "25-35 min",
                     "fuente": "agente_rappi",
                     "fecha": datetime.now(timezone.utc).isoformat(),
-                    "imagen_url": screenshot_path
+                    "imagen_url": imagen_url
                 }
 
                 # ── Guardar en BD ──
@@ -201,7 +214,7 @@ class RappiAgent:
                             "farmacia": farmacia,
                             "precio": precio,
                             "url": href,
-                            "imagen_url": screenshot_path,
+                            "imagen_url": imagen_url,
                             "fuente": "agente_rappi",
                             "fecha": resultado["fecha"],
                         })
