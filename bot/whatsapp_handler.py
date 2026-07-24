@@ -191,7 +191,7 @@ def limpiar_contexto_expirado():
         del user_context[k]
 
 # ------------------------------------------------------------
-#  FUNCIÓN DE FORMATEO (sin cambios)
+#  FUNCIÓN DE FORMATEO (MEJORADA)
 # ------------------------------------------------------------
 def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -> str:
     lines = []
@@ -341,12 +341,15 @@ def whatsapp_webhook():
                     precios_recientes.append(p)
             logging.info(f"Registros históricos obtenidos: {len(precios_recientes)}")
 
-        # Filtros
+        # Filtros (con mejora para delivery)
         conn = get_connection()
         try:
             filtrados_coherencia = []
             for p in precios_recientes:
-                if validar_coherencia_producto(p.get('nombre_raw', ''), medicamento_ref):
+                # Si es delivery, saltar el filtro de coherencia (nombre_raw puede no coincidir)
+                if p.get('fuente', '').lower() in ['agente_rappi', 'agente_ubereats']:
+                    filtrados_coherencia.append(p)
+                elif validar_coherencia_producto(p.get('nombre_raw', ''), medicamento_ref):
                     filtrados_coherencia.append(p)
                 else:
                     logging.info(f"Descartado por incoherencia: {p.get('nombre_raw', '')[:40]} vs {medicamento_ref}")
@@ -358,11 +361,12 @@ def whatsapp_webhook():
                 else:
                     logging.info(f"Descartado por precio anómalo: ${p['precio']} para {medicamento_ref}")
 
+            # --- NUEVA DEDUPLICACIÓN POR FARMACIA + FUENTE ---
             mejores = {}
             for p in filtrados_precio:
-                farmacia_norm = normalizar_farmacia(p['farmacia']).lower()
-                if farmacia_norm not in mejores or p['fecha'] > mejores[farmacia_norm]['fecha']:
-                    mejores[farmacia_norm] = p
+                key = (normalizar_farmacia(p['farmacia']).lower(), p.get('fuente', '').lower())
+                if key not in mejores or p['fecha'] > mejores[key]['fecha']:
+                    mejores[key] = p
             precios_depurados = list(mejores.values())
             logging.info(f"Después de deduplicación: {len(precios_depurados)}")
         finally:
@@ -388,7 +392,6 @@ def whatsapp_webhook():
             }
         else:
             # ---------- FALLBACK INTELIGENTE ----------
-            # Usamos la función mejorada para obtener el principio activo
             principio_activo = obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresado)
             logging.info(f"🔍 Principio activo para búsqueda de alternativas: {principio_activo}")
 
