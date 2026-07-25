@@ -12,7 +12,7 @@ from llm.normalizer import MedicamentoNormalizer
 from data.database import (
     get_resumen, init_db, save_precio, get_last_precios,
     validar_coherencia_producto, validar_precio, normalizar_farmacia,
-    get_connection, get_precios
+    get_connection, get_precios, normalizar_texto
 )
 from bot.counter import increment_and_check_limit, is_limit_reached, LIMITE_DIARIO, LIMITE_NOTIFICACION
 from bot.telegram_notifier import send_telegram_message
