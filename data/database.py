@@ -12,7 +12,7 @@ from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
 # ============================================================
-# CONFIGURACIÓN DE LOGGING
+# CONFIGURACIÓN DE LOGGING (FORZAR SALIDA A STDOUT)
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -61,6 +61,12 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_medicamento ON precios(medicamento)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_fecha ON precios(fecha)')
     
+    # --- ÍNDICE ÚNICO ELIMINADO (fecha::date NO es inmutable) ---
+    # La deduplicación se maneja en save_precio() con verificación de duplicados.
+    # Si deseas reforzar la deduplicación a nivel DB, usa un trigger o una función inmutable.
+    # Pero la verificación en código es suficiente y evita errores de transacción.
+    
+    # --- Tabla de rangos de precios ---
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS rangos_precios (
             medicamento_generico TEXT PRIMARY KEY,
@@ -105,7 +111,7 @@ def normalizar_farmacia(nombre: str) -> str:
     if match:
         nombre = match.group(1)
     nombre = nombre.lower().strip()
-    nombre = re.sub(r'\bfarmacia(s)?\b', '', nombre)
+    nombre = re.sub(r'\bfarmacias?\b', '', nombre)
     nombre = re.sub(r'\s+', ' ', nombre).strip()
     return nombre
 
@@ -164,6 +170,9 @@ def es_url_valida(url: str) -> bool:
     except:
         return False
 
+# ============================================================
+# FUNCIÓN save_precio CON VERIFICACIÓN DE DUPLICADOS
+# ============================================================
 def save_precio(data: Dict[str, Any]):
     required = ['medicamento', 'farmacia', 'precio', 'fuente', 'fecha']
     for field in required:
@@ -185,7 +194,8 @@ def save_precio(data: Dict[str, Any]):
     conn = get_connection()
     cursor = conn.cursor()
     
-    fecha_dia = fecha_str[:10]
+    # --- Verificar si ya existe un registro para el mismo medicamento, farmacia y fecha (sin hora) ---
+    fecha_dia = fecha_str[:10]  # YYYY-MM-DD
     if IS_PROD:
         cursor.execute(
             "SELECT 1 FROM precios WHERE medicamento = %s AND farmacia = %s AND DATE(fecha) = %s LIMIT 1",
@@ -201,6 +211,7 @@ def save_precio(data: Dict[str, Any]):
         conn.close()
         return
     
+    # --- Insertar ---
     if IS_PROD:
         cursor.execute('''
             INSERT INTO precios (
@@ -283,7 +294,6 @@ def get_precios(medicamento: str, horas: int = 24) -> List[Dict[str, Any]]:
         else:
             logger.info(f"  ❌ Descartado por precio: ${r['precio']} - {r.get('nombre_raw', '')[:30]}")
     
-    # DEDUPLICACIÓN POR FARMACIA NORMALIZADA (sin importar fuente)
     mejores = {}
     for r in filtrados_precio:
         farmacia_norm = normalizar_farmacia(r['farmacia'])
