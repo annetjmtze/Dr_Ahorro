@@ -367,15 +367,14 @@ def whatsapp_webhook():
                 else:
                     logging.info(f"❌ Descartado por precio anómalo: ${p['precio']} para {medicamento_ref}")
 
-            # --- DEDUPLICACIÓN MEJORADA: agrupar por farmacia normalizada + medicamento normalizado + fuente ---
+            # --- DEDUPLICACIÓN SIMPLIFICADA: agrupar por farmacia + medicamento (sin fuente) y elegir el precio más bajo ---
             mejores = {}
             for p in filtrados_precio:
-                # Normalizar farmacia Y medicamento para evitar duplicados de la misma farmacia
                 farmacia_norm = normalizar_farmacia(p['farmacia'])
                 medicamento_norm = normalizar_texto(p['medicamento'])
-                fuente = p.get('fuente', '').lower()
-                key = (farmacia_norm, medicamento_norm, fuente)
-                if key not in mejores or p['fecha'] > mejores[key]['fecha']:
+                key = (farmacia_norm, medicamento_norm)
+                # Guardar el de menor precio; si igual, el más reciente
+                if key not in mejores or p['precio'] < mejores[key]['precio'] or (p['precio'] == mejores[key]['precio'] and p['fecha'] > mejores[key]['fecha']):
                     mejores[key] = p
             precios_depurados = list(mejores.values())
             logging.info(f"📦 Después de deduplicación: {len(precios_depurados)}")
