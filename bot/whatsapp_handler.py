@@ -12,7 +12,7 @@ from llm.normalizer import MedicamentoNormalizer
 from data.database import (
     get_resumen, init_db, save_precio, get_last_precios,
     validar_coherencia_producto, validar_precio, normalizar_farmacia,
-    get_connection, get_precios
+    get_connection, get_precios, normalizar_texto
 )
 from bot.counter import increment_and_check_limit, is_limit_reached, LIMITE_DIARIO, LIMITE_NOTIFICACION
 from bot.telegram_notifier import send_telegram_message
@@ -306,7 +306,8 @@ def whatsapp_webhook():
         if not incoming_msg:
             msg.body("Por favor, envía el nombre de un medicamento.")
             return Response(str(resp), mimetype="application/xml")
-                # ---------- Manejo de preguntas de seguimiento ----------
+
+        # ---------- Manejo de preguntas de seguimiento ----------
         contexto = user_context.get(sender)
         if contexto:
             pregunta = incoming_msg.lower()
@@ -318,7 +319,7 @@ def whatsapp_webhook():
             # Si no es palabra clave de seguimiento, ignoramos el contexto
             # y continuamos con el flujo normal (nueva búsqueda)
         # ---------------------------------------------------------
-      
+
         # Procesar nueva búsqueda
         resultado = normalizer.normalizar(incoming_msg)
         if "error" in resultado:
@@ -366,10 +367,14 @@ def whatsapp_webhook():
                 else:
                     logging.info(f"❌ Descartado por precio anómalo: ${p['precio']} para {medicamento_ref}")
 
-            # --- DEDUPLICACIÓN POR FARMACIA + FUENTE ---
+            # --- DEDUPLICACIÓN MEJORADA: agrupar por farmacia normalizada + medicamento normalizado + fuente ---
             mejores = {}
             for p in filtrados_precio:
-                key = (normalizar_farmacia(p['farmacia']).lower(), p.get('fuente', '').lower())
+                # Normalizar farmacia Y medicamento para evitar duplicados de la misma farmacia
+                farmacia_norm = normalizar_farmacia(p['farmacia'])
+                medicamento_norm = normalizar_texto(p['medicamento'])
+                fuente = p.get('fuente', '').lower()
+                key = (farmacia_norm, medicamento_norm, fuente)
                 if key not in mejores or p['fecha'] > mejores[key]['fecha']:
                     mejores[key] = p
             precios_depurados = list(mejores.values())
