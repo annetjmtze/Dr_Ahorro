@@ -107,11 +107,20 @@ def normalizar_texto(texto: str) -> str:
 def normalizar_farmacia(nombre: str) -> str:
     if not nombre:
         return ""
+    # Extraer nombre entre paréntesis si existe
     match = re.search(r'\(([^)]+)\)', nombre)
     if match:
         nombre = match.group(1)
+    # Convertir a minúsculas
     nombre = nombre.lower().strip()
-    nombre = re.sub(r'\bfarmacias?\b', '', nombre)
+    # Eliminar tildes
+    nombre = unicodedata.normalize('NFKD', nombre).encode('ASCII', 'ignore').decode('ASCII')
+    # Eliminar "farmacia", "farmacias" y palabras comunes
+    nombre = re.sub(r'\bfarmacia(s)?\b', '', nombre)
+    nombre = re.sub(r'\b(de|la|el|y|del)\b', '', nombre)
+    # Eliminar cualquier caracter no alfanumérico (excepto espacios)
+    nombre = re.sub(r'[^a-z0-9\s]', '', nombre)
+    # Eliminar espacios extra
     nombre = re.sub(r'\s+', ' ', nombre).strip()
     return nombre
 
