@@ -33,6 +33,7 @@
   - **Agentes de Delivery**: Consulta precios en **Rappi** y **Uber Eats**.
   - **Scrapers Legacy**: Soporte para sitios estáticos con `requests` y `BeautifulSoup`.
 - ✅ **Inteligencia Artificial**: Utiliza **Claude (Anthropic)** para normalizar los nombres de medicamentos ingresados por el usuario (ej. "Tempra" -> "Paracetamol").
+- ✅ **Calidad de Datos**: Implementa validaciones para descartar precios anómalos y un sistema de deduplicación para asegurar que no se muestren farmacias repetidas en una misma consulta.
 - ✅ **Fallback Inteligente**: Si no se encuentran precios, el bot busca alternativas basadas en el principio activo, destaca si se requiere receta y puede responder preguntas de seguimiento básicas.
 - ✅ Almacena el historial de precios en una base de datos **PostgreSQL** (producción) o **SQLite** (desarrollo).
 - ✅ **Almacenamiento en la Nube**: Guarda capturas de pantalla de las búsquedas de Playwright en **Cloudflare R2** como evidencia.
