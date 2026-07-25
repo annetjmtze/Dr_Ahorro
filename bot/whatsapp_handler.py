@@ -369,8 +369,11 @@ def whatsapp_webhook():
             # --- DEDUPLICACIÓN POR FARMACIA + FUENTE ---
             mejores = {}
             for p in filtrados_precio:
-                key = (normalizar_farmacia(p['farmacia']).lower(), p.get('fuente', '').lower())
-                if key not in mejores or p['fecha'] > mejores[key]['fecha']:
+                farmacia_norm = normalizar_farmacia(p['farmacia'])
+                medicamento_norm = normalizar_texto(p['medicamento'])
+                key = (farmacia_norm, medicamento_norm)
+                # Guardar el de menor precio; si igual, el más reciente
+                if key not in mejores or p['precio'] < mejores[key]['precio']:
                     mejores[key] = p
             precios_depurados = list(mejores.values())
             logging.info(f"📦 Después de deduplicación: {len(precios_depurados)}")
