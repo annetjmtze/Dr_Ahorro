@@ -4,7 +4,7 @@ import sqlite3
 import psycopg
 from psycopg.rows import dict_row
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import re
 import unicodedata
 import logging
@@ -42,6 +42,8 @@ def get_connection():
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
+    
+    # --- Tabla de precios (existente) ---
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS precios (
             id SERIAL PRIMARY KEY,
@@ -61,12 +63,7 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_medicamento ON precios(medicamento)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_fecha ON precios(fecha)')
     
-    # --- ÍNDICE ÚNICO ELIMINADO (fecha::date NO es inmutable) ---
-    # La deduplicación se maneja en save_precio() con verificación de duplicados.
-    # Si deseas reforzar la deduplicación a nivel DB, usa un trigger o una función inmutable.
-    # Pero la verificación en código es suficiente y evita errores de transacción.
-    
-    # --- Tabla de rangos de precios ---
+    # --- Tabla de rangos (existente) ---
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS rangos_precios (
             medicamento_generico TEXT PRIMARY KEY,
@@ -94,10 +91,31 @@ def init_db():
             'INSERT OR IGNORE INTO rangos_precios (medicamento_generico, precio_min, precio_max) VALUES (?, ?, ?)',
             rangos_default
         )
+    
+    # --- NUEVA TABLA: usuarios para onboarding ---
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id              SERIAL PRIMARY KEY,
+            whatsapp_number TEXT UNIQUE NOT NULL,
+            colonia         TEXT,
+            codigo_postal   TEXT,
+            ciudad          TEXT DEFAULT 'Ciudad de México',
+            latitud         REAL,
+            longitud        REAL,
+            zona_verificada BOOLEAN DEFAULT FALSE,
+            created_at      TEXT NOT NULL,
+            ultima_busqueda TEXT
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_whatsapp ON usuarios(whatsapp_number)')
+    
     conn.commit()
     conn.close()
-    logger.info("📦 Base de datos inicializada correctamente")
+    logger.info("📦 Base de datos inicializada correctamente (tablas precios, rangos, usuarios)")
 
+# ============================================================
+# FUNCIONES DE NORMALIZACIÓN (ya existentes)
+# ============================================================
 def normalizar_texto(texto: str) -> str:
     texto = texto.lower().strip()
     texto = ''.join(c for c in unicodedata.normalize('NFD', texto) if unicodedata.category(c) != 'Mn')
@@ -107,20 +125,14 @@ def normalizar_texto(texto: str) -> str:
 def normalizar_farmacia(nombre: str) -> str:
     if not nombre:
         return ""
-    # Extraer nombre entre paréntesis si existe
     match = re.search(r'\(([^)]+)\)', nombre)
     if match:
         nombre = match.group(1)
-    # Convertir a minúsculas
     nombre = nombre.lower().strip()
-    # Eliminar tildes
     nombre = unicodedata.normalize('NFKD', nombre).encode('ASCII', 'ignore').decode('ASCII')
-    # Eliminar "farmacia", "farmacias" y palabras comunes
     nombre = re.sub(r'\bfarmacia(s)?\b', '', nombre)
     nombre = re.sub(r'\b(de|la|el|y|del)\b', '', nombre)
-    # Eliminar cualquier caracter no alfanumérico (excepto espacios)
     nombre = re.sub(r'[^a-z0-9\s]', '', nombre)
-    # Eliminar espacios extra
     nombre = re.sub(r'\s+', ' ', nombre).strip()
     return nombre
 
@@ -180,7 +192,7 @@ def es_url_valida(url: str) -> bool:
         return False
 
 # ============================================================
-# FUNCIÓN save_precio CON VERIFICACIÓN DE DUPLICADOS
+# FUNCIONES DE PRECIOS (ya existentes, sin cambios)
 # ============================================================
 def save_precio(data: Dict[str, Any]):
     required = ['medicamento', 'farmacia', 'precio', 'fuente', 'fecha']
@@ -203,8 +215,7 @@ def save_precio(data: Dict[str, Any]):
     conn = get_connection()
     cursor = conn.cursor()
     
-    # --- Verificar si ya existe un registro para el mismo medicamento, farmacia y fecha (sin hora) ---
-    fecha_dia = fecha_str[:10]  # YYYY-MM-DD
+    fecha_dia = fecha_str[:10]
     if IS_PROD:
         cursor.execute(
             "SELECT 1 FROM precios WHERE medicamento = %s AND farmacia = %s AND DATE(fecha) = %s LIMIT 1",
@@ -220,7 +231,6 @@ def save_precio(data: Dict[str, Any]):
         conn.close()
         return
     
-    # --- Insertar ---
     if IS_PROD:
         cursor.execute('''
             INSERT INTO precios (
@@ -373,3 +383,161 @@ def contar_por_fuente():
             count = row[1]
         resultado[fuente] = count
     return resultado
+
+# ============================================================
+# NUEVAS FUNCIONES PARA EL ONBOARDING DE USUARIOS
+# ============================================================
+
+def get_usuario(whatsapp_number: str) -> Optional[Dict[str, Any]]:
+    """
+    Obtiene el registro del usuario por su número de WhatsApp.
+    Retorna un diccionario con los datos o None si no existe.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    if IS_PROD:
+        cursor.execute(
+            "SELECT * FROM usuarios WHERE whatsapp_number = %s",
+            (whatsapp_number,)
+        )
+    else:
+        cursor.execute(
+            "SELECT * FROM usuarios WHERE whatsapp_number = ?",
+            (whatsapp_number,)
+        )
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return dict(row)
+
+def _save_usuario(whatsapp_number: str, data: Dict[str, Any]):
+    """
+    Función interna para insertar o actualizar un usuario.
+    data puede contener: colonia, codigo_postal, ciudad, latitud, longitud, zona_verificada
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    if IS_PROD:
+        cursor.execute(
+            """
+            INSERT INTO usuarios (
+                whatsapp_number, colonia, codigo_postal, ciudad, latitud, longitud,
+                zona_verificada, created_at, ultima_busqueda
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (whatsapp_number) DO UPDATE SET
+                colonia = EXCLUDED.colonia,
+                codigo_postal = EXCLUDED.codigo_postal,
+                ciudad = EXCLUDED.ciudad,
+                latitud = EXCLUDED.latitud,
+                longitud = EXCLUDED.longitud,
+                zona_verificada = EXCLUDED.zona_verificada,
+                ultima_busqueda = EXCLUDED.ultima_busqueda
+            """,
+            (
+                whatsapp_number,
+                data.get('colonia'),
+                data.get('codigo_postal'),
+                data.get('ciudad', 'Ciudad de México'),
+                data.get('latitud'),
+                data.get('longitud'),
+                data.get('zona_verificada', False),
+                data.get('created_at', datetime.now(timezone.utc).isoformat()),
+                data.get('ultima_busqueda', datetime.now(timezone.utc).isoformat())
+            )
+        )
+    else:
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO usuarios (
+                whatsapp_number, colonia, codigo_postal, ciudad, latitud, longitud,
+                zona_verificada, created_at, ultima_busqueda
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                whatsapp_number,
+                data.get('colonia'),
+                data.get('codigo_postal'),
+                data.get('ciudad', 'Ciudad de México'),
+                data.get('latitud'),
+                data.get('longitud'),
+                data.get('zona_verificada', False),
+                data.get('created_at', datetime.now(timezone.utc).isoformat()),
+                data.get('ultima_busqueda', datetime.now(timezone.utc).isoformat())
+            )
+        )
+    conn.commit()
+    conn.close()
+
+def save_zona_texto(whatsapp_number: str, colonia: str, cp: Optional[str] = None):
+    """
+    Guarda o actualiza la zona del usuario a partir de texto (colonia y código postal opcional).
+    """
+    data = {
+        'colonia': colonia.strip(),
+        'codigo_postal': cp.strip() if cp else None,
+        'zona_verificada': True,
+        'ultima_busqueda': datetime.now(timezone.utc).isoformat()
+    }
+    _save_usuario(whatsapp_number, data)
+    logger.info(f"✅ Zona guardada para {whatsapp_number}: colonia='{colonia}', CP='{cp}'")
+
+def save_zona_gps(whatsapp_number: str, lat: float, lon: float):
+    """
+    Guarda o actualiza la zona del usuario a partir de coordenadas GPS.
+    """
+    data = {
+        'latitud': lat,
+        'longitud': lon,
+        'zona_verificada': True,
+        'ultima_busqueda': datetime.now(timezone.utc).isoformat()
+    }
+    _save_usuario(whatsapp_number, data)
+    logger.info(f"✅ GPS guardado para {whatsapp_number}: lat={lat}, lon={lon}")
+
+def actualizar_zona(
+    whatsapp_number: str,
+    colonia: Optional[str] = None,
+    cp: Optional[str] = None,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None
+):
+    """
+    Función genérica para actualizar la zona del usuario con cualquier combinación de datos.
+    """
+    data = {}
+    if colonia is not None:
+        data['colonia'] = colonia.strip()
+    if cp is not None:
+        data['codigo_postal'] = cp.strip()
+    if lat is not None:
+        data['latitud'] = lat
+    if lon is not None:
+        data['longitud'] = lon
+    if not data:
+        logger.warning("No se proporcionaron datos para actualizar zona")
+        return
+    data['zona_verificada'] = True
+    data['ultima_busqueda'] = datetime.now(timezone.utc).isoformat()
+    _save_usuario(whatsapp_number, data)
+    logger.info(f"🔄 Zona actualizada para {whatsapp_number}: {data}")
+
+# ------------------------------------------------------------
+# NUEVA FUNCIÓN: clear_zona (para el comando /zona)
+# ------------------------------------------------------------
+def clear_zona(whatsapp_number: str):
+    """
+    Elimina la zona guardada del usuario (colonia, CP, latitud, longitud)
+    y marca zona_verificada = False. Útil para el comando /zona.
+    """
+    data = {
+        'colonia': None,
+        'codigo_postal': None,
+        'latitud': None,
+        'longitud': None,
+        'zona_verificada': False,
+        'ultima_busqueda': datetime.now(timezone.utc).isoformat()
+    }
+    _save_usuario(whatsapp_number, data)
+    logger.info(f"🧹 Zona limpiada para {whatsapp_number}")
