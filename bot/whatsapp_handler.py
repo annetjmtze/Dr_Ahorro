@@ -12,7 +12,9 @@ from llm.normalizer import MedicamentoNormalizer
 from data.database import (
     get_resumen, init_db, save_precio, get_last_precios,
     validar_coherencia_producto, validar_precio, normalizar_farmacia,
-    get_connection, get_precios
+    get_connection, get_precios,
+    # --- Nuevas importaciones para onboarding ---
+    get_usuario, save_zona_texto, save_zona_gps, clear_zona
 )
 from bot.counter import increment_and_check_limit, is_limit_reached, LIMITE_DIARIO, LIMITE_NOTIFICACION
 from bot.telegram_notifier import send_telegram_message
@@ -42,8 +44,12 @@ logging.basicConfig(level=logging.INFO)
 user_context = {}
 CONTEXTO_EXPIRACION = timedelta(minutes=30)
 
+# --- Nuevo: usuarios que están esperando responder su zona ---
+# Mapea número de WhatsApp -> medicamento que buscaba originalmente
+pending_zone = {}
+
 # ------------------------------------------------------------
-#  FUNCIONES AUXILIARES
+#  FUNCIONES AUXILIARES (sin cambios)
 # ------------------------------------------------------------
 
 def obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresado):
@@ -191,9 +197,9 @@ def limpiar_contexto_expirado():
         del user_context[k]
 
 # ------------------------------------------------------------
-#  FUNCIÓN DE FORMATEO (MEJORADA)
+#  FUNCIÓN DE FORMATEO (MEJORADA CON ZONA)
 # ------------------------------------------------------------
-def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -> str:
+def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, zona_texto: str = None) -> str:
     lines = []
     lines.append(f"💊 *{nombre_generico.title()}*")
     lines.append("")
@@ -278,33 +284,101 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list) -
             except:
                 pass
 
-    lines.append("\n↩️ Escribe otro medicamento para comparar")
+    # --- Pie de página con zona (si se proporciona) ---
+    if zona_texto:
+        lines.append(f"\n📍 Buscando en {zona_texto} · Escribe /zona para cambiar.")
+    else:
+        lines.append("\n↩️ Escribe otro medicamento para comparar")
     return "\n".join(lines)
 
 # ------------------------------------------------------------
-#  WEBHOOK PRINCIPAL
+#  WEBHOOK PRINCIPAL (CON ONBOARDING)
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():
     resp = MessagingResponse()
     msg = resp.message()
     try:
+        # Obtener datos del request
         incoming_msg = request.form.get("Body", "").strip()
         sender = request.form.get("From", "desconocido")
-        logging.info(f"Mensaje de {sender}: {incoming_msg}")
+        lat = request.form.get("Latitude")
+        lon = request.form.get("Longitude")
+        is_gps = (lat is not None and lon is not None)
+
+        logging.info(f"Mensaje de {sender}: {incoming_msg} (GPS: {is_gps})")
 
         limpiar_contexto_expirado()
 
+        # Verificar límite diario
         if is_limit_reached():
             msg.body("Alcanzamos el límite de consultas por hoy. Vuelve mañana.")
             logging.warning(f"Límite diario alcanzado, rechazando mensaje de {sender}")
             return Response(str(resp), mimetype="application/xml")
 
-        if not incoming_msg:
+        if not incoming_msg and not is_gps:
             msg.body("Por favor, envía el nombre de un medicamento.")
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- Manejo de preguntas de seguimiento ----------
+        # ---------- Manejo de comando /zona ----------
+        if incoming_msg.lower() == "/zona":
+            # Limpiar zona del usuario
+            clear_zona(sender)
+            # Preguntar nueva zona
+            msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas? Escribe tu colonia o código postal, o toca el clip 📎 y comparte tu ubicación.")
+            # No guardamos medicamento pendiente; solo actualizamos zona y el usuario luego buscará
+            # Si el usuario estaba en pending_zone, lo eliminamos para no confundir
+            pending_zone.pop(sender, None)
+            return Response(str(resp), mimetype="application/xml")
+
+        # ---------- Manejo de GPS cuando NO está en pending_zone ----------
+        # Si el usuario comparte GPS sin haber sido preguntado, actualizamos su zona y confirmamos
+        if is_gps and sender not in pending_zone:
+            save_zona_gps(sender, float(lat), float(lon))
+            msg.body("✅ Ubicación GPS guardada. Ahora puedes buscar medicamentos y te mostraré precios en tu zona.")
+            return Response(str(resp), mimetype="application/xml")
+
+        # ---------- Verificar si el usuario está en pending_zone (esperando respuesta de zona) ----------
+        if sender in pending_zone:
+            # Este mensaje es la respuesta a la pregunta de zona (texto o GPS)
+            medicamento_pendiente = pending_zone.pop(sender)
+
+            # Guardar la zona según el tipo de mensaje
+            if is_gps:
+                save_zona_gps(sender, float(lat), float(lon))
+                zona_texto = "tu ubicación GPS"
+            else:
+                # El texto puede ser colonia o código postal
+                # Si parece código postal (solo dígitos) lo tratamos como CP
+                cp = None
+                colonia = incoming_msg
+                if incoming_msg.isdigit() and len(incoming_msg) in [5, 6]:
+                    cp = incoming_msg
+                    colonia = None  # Podríamos dejar colonia vacía o asignar "Código postal"
+                save_zona_texto(sender, colonia, cp)
+                zona_texto = colonia if colonia else f"CP {cp}"
+
+            # Ahora procesamos la búsqueda del medicamento pendiente
+            # Reasignamos incoming_msg para que el resto del código lo procese
+            incoming_msg = medicamento_pendiente
+            # Y continuamos con el flujo normal de búsqueda
+            # (No retornamos aún, dejamos que siga el código)
+
+        # ---------- A partir de aquí, el usuario tiene zona (o la acabamos de guardar) ----------
+        # Verificar si el usuario tiene zona registrada (si no estaba en pending_zone y no tiene zona, preguntar)
+        usuario = get_usuario(sender)
+        tiene_zona = usuario and (usuario.get('colonia') is not None or usuario.get('latitud') is not None)
+
+        if not tiene_zona and sender not in pending_zone:
+            # No tiene zona, guardamos el medicamento y preguntamos
+            pending_zone[sender] = incoming_msg
+            msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas? Escribe tu colonia o código postal, o toca el clip 📎 y comparte tu ubicación.")
+            return Response(str(resp), mimetype="application/xml")
+
+        # ---------- Procesar búsqueda de medicamento (normal) ----------
+        # Si llegamos aquí, el usuario tiene zona o la acabamos de guardar y ahora procesamos el medicamento
+
+        # --- Manejo de preguntas de seguimiento (contexto) ---
         contexto = user_context.get(sender)
         if contexto:
             pregunta = incoming_msg.lower()
@@ -313,7 +387,6 @@ def whatsapp_webhook():
                 respuesta = manejar_pregunta_seguimiento(pregunta, contexto)
                 msg.body(respuesta)
                 return Response(str(resp), mimetype="application/xml")
-        # ---------------------------------------------------------
 
         # Procesar nueva búsqueda
         resultado = normalizer.normalizar(incoming_msg)
@@ -361,7 +434,7 @@ def whatsapp_webhook():
                 else:
                     logging.info(f"Descartado por precio anómalo: ${p['precio']} para {medicamento_ref}")
 
-            # --- NUEVA DEDUPLICACIÓN POR FARMACIA + FUENTE ---
+            # Deduplicación por farmacia + fuente
             mejores = {}
             for p in filtrados_precio:
                 key = (normalizar_farmacia(p['farmacia']).lower(), p.get('fuente', '').lower())
@@ -378,8 +451,20 @@ def whatsapp_webhook():
         farmacias.sort(key=lambda x: x['precio'])
         delivery.sort(key=lambda x: x['precio'])
 
+        # --- Obtener zona del usuario para el pie de página ---
+        usuario_actual = get_usuario(sender)
+        if usuario_actual:
+            if usuario_actual.get('colonia'):
+                zona_texto = usuario_actual['colonia']
+            elif usuario_actual.get('latitud') is not None:
+                zona_texto = f"GPS ({usuario_actual['latitud']:.4f}, {usuario_actual['longitud']:.4f})"
+            else:
+                zona_texto = "tu zona"
+        else:
+            zona_texto = None
+
         if farmacias or delivery:
-            respuesta = formatear_respuesta(nombre_generico, farmacias, delivery)
+            respuesta = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
             msg.body(respuesta)
             # Guardar contexto
             user_context[sender] = {
@@ -409,6 +494,9 @@ def whatsapp_webhook():
                 alternativas,
                 principio_activo
             )
+            # También podemos agregar la zona al mensaje fallback
+            if zona_texto:
+                mensaje += f"\n📍 Buscando en {zona_texto} · Escribe /zona para cambiar."
             msg.body(mensaje)
 
             # Guardar contexto con alternativas
