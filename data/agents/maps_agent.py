@@ -24,6 +24,9 @@ R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL")  # URL pública del bucket, ej: https
 # Tiempo de validez del caché (6 horas)
 CACHE_EXPIRATION_HOURS = 6
 
+logger.info(f"🔑 R2_ACCESS_KEY: {R2_ACCESS_KEY[:4]}...")  # solo primeros 4 caracteres
+logger.info(f"🔑 R2_ENDPOINT: {R2_ENDPOINT}")
+
 # Inicializar cliente S3 para R2
 def get_r2_client():
     return boto3.client(
