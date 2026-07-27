@@ -13,11 +13,13 @@ from data.database import (
     get_resumen, init_db, save_precio, get_last_precios,
     validar_coherencia_producto, validar_precio, normalizar_farmacia,
     get_connection, get_precios,
-    # --- Nuevas importaciones para onboarding ---
     get_usuario, save_zona_texto, save_zona_gps, clear_zona
 )
 from bot.counter import increment_and_check_limit, is_limit_reached, LIMITE_DIARIO, LIMITE_NOTIFICACION
 from bot.telegram_notifier import send_telegram_message
+
+# --- NUEVA IMPORTACIÓN PARA MAPAS ---
+from data.agents.maps_agent import obtener_mapa_para_zona_sync
 
 load_dotenv()
 
@@ -45,7 +47,6 @@ user_context = {}
 CONTEXTO_EXPIRACION = timedelta(minutes=30)
 
 # --- Nuevo: usuarios que están esperando responder su zona ---
-# Mapea número de WhatsApp -> medicamento que buscaba originalmente
 pending_zone = {}
 
 # ------------------------------------------------------------
@@ -56,11 +57,9 @@ def obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresa
     """
     Devuelve el principio activo más adecuado para la búsqueda.
     """
-    # Si el normalizador ya dio un principio activo, lo usamos
     if resultado.get('principio_activo'):
         return resultado['principio_activo']
     
-    # Casos especiales (mapeo manual)
     nombre_lower = nombre_ingresado.lower()
     if 'clavulánico' in nombre_lower or 'clavulanico' in nombre_lower:
         return 'amoxicilina'
@@ -71,14 +70,9 @@ def obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresa
     if 'paracetamol' in nombre_lower:
         return 'paracetamol'
     
-    # Fallback: usar nombre_generico
     return nombre_generico
 
 def get_alternativas(principio_activo: str, limit: int = 5):
-    """
-    Busca medicamentos que contengan el principio activo en la columna 'medicamento'
-    y que tengan precio registrado. Retorna lista de dicts.
-    """
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -112,7 +106,6 @@ def get_alternativas(principio_activo: str, limit: int = 5):
     resultados = []
     for row in rows:
         if IS_PROD:
-            # row es dict
             resultados.append({
                 'nombre': row['medicamento'],
                 'presentacion': '',
@@ -123,7 +116,6 @@ def get_alternativas(principio_activo: str, limit: int = 5):
                 'url': row['url'] or ''
             })
         else:
-            # row es tuple (SQLite)
             resultados.append({
                 'nombre': row[0],
                 'presentacion': '',
@@ -137,19 +129,11 @@ def get_alternativas(principio_activo: str, limit: int = 5):
 
 def construir_mensaje_fallback(nombre_ingresado, nombre_generico, requiere_receta, alternativas, principio_activo):
     mensaje = ""
-    
-    # 1. Aviso de receta (si aplica) - SIEMPRE PRIMERO
     if requiere_receta:
         mensaje += "⚠️ *Este medicamento requiere receta médica*\n\n"
-    
-    # 2. Encabezado del medicamento buscado
     mensaje += f"💊 *{nombre_ingresado.title()}*\n"
-    
-    # 3. Mensaje de que no hay precios
     mensaje += "Aún no tenemos precios en tu zona,\n"
     mensaje += "pero encontramos estos similares:\n\n"
-    
-    # 4. Listar alternativas
     if alternativas:
         for alt in alternativas[:5]:
             mensaje += f"• {alt['nombre']}\n"
@@ -161,12 +145,9 @@ def construir_mensaje_fallback(nombre_ingresado, nombre_generico, requiere_recet
         mensaje += "No encontramos alternativas en nuestra base,\n"
         mensaje += "pero puedes preguntar por: amoxicilina, ibuprofeno, paracetamol (según el caso).\n"
         mensaje += "Consulta con tu farmacéutico.\n\n"
-    
-    # 5. Acción sugerida (NUNCA terminar sin acción)
     mensaje += "¿Quieres buscar el precio exacto\n"
     mensaje += "de este medicamento? Escribe \"sí\"\n"
     mensaje += "y te avisamos cuando lo tengamos."
-    
     return mensaje
 
 def manejar_pregunta_seguimiento(pregunta: str, contexto: dict) -> str:
@@ -284,7 +265,6 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, z
             except:
                 pass
 
-    # --- Pie de página con zona (si se proporciona) ---
     if zona_texto:
         lines.append(f"\n📍 Buscando en {zona_texto} · Escribe /zona para cambiar.")
     else:
@@ -292,12 +272,11 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, z
     return "\n".join(lines)
 
 # ------------------------------------------------------------
-#  WEBHOOK PRINCIPAL (CON ONBOARDING)
+#  WEBHOOK PRINCIPAL (CON ONBOARDING Y MAPA)
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():
     resp = MessagingResponse()
-    msg = resp.message()
     try:
         # Obtener datos del request
         incoming_msg = request.form.get("Body", "").strip()
@@ -312,85 +291,76 @@ def whatsapp_webhook():
 
         # Verificar límite diario
         if is_limit_reached():
+            msg = resp.message()
             msg.body("Alcanzamos el límite de consultas por hoy. Vuelve mañana.")
             logging.warning(f"Límite diario alcanzado, rechazando mensaje de {sender}")
             return Response(str(resp), mimetype="application/xml")
 
         if not incoming_msg and not is_gps:
+            msg = resp.message()
             msg.body("Por favor, envía el nombre de un medicamento.")
             return Response(str(resp), mimetype="application/xml")
 
         # ---------- Manejo de comando /zona ----------
         if incoming_msg.lower() == "/zona":
-            # Limpiar zona del usuario
             clear_zona(sender)
-            # Preguntar nueva zona
+            msg = resp.message()
             msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas? Escribe tu colonia o código postal, o toca el clip 📎 y comparte tu ubicación.")
-            # No guardamos medicamento pendiente; solo actualizamos zona y el usuario luego buscará
-            # Si el usuario estaba en pending_zone, lo eliminamos para no confundir
             pending_zone.pop(sender, None)
             return Response(str(resp), mimetype="application/xml")
 
         # ---------- Manejo de GPS cuando NO está en pending_zone ----------
-        # Si el usuario comparte GPS sin haber sido preguntado, actualizamos su zona y confirmamos
         if is_gps and sender not in pending_zone:
             save_zona_gps(sender, float(lat), float(lon))
+            msg = resp.message()
             msg.body("✅ Ubicación GPS guardada. Ahora puedes buscar medicamentos y te mostraré precios en tu zona.")
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- Verificar si el usuario está en pending_zone (esperando respuesta de zona) ----------
+        # ---------- Verificar si el usuario está en pending_zone ----------
         if sender in pending_zone:
-            # Este mensaje es la respuesta a la pregunta de zona (texto o GPS)
             medicamento_pendiente = pending_zone.pop(sender)
 
-            # Guardar la zona según el tipo de mensaje
             if is_gps:
                 save_zona_gps(sender, float(lat), float(lon))
                 zona_texto = "tu ubicación GPS"
             else:
-                # El texto puede ser colonia o código postal
-                # Si parece código postal (solo dígitos) lo tratamos como CP
                 cp = None
                 colonia = incoming_msg
                 if incoming_msg.isdigit() and len(incoming_msg) in [5, 6]:
                     cp = incoming_msg
-                    colonia = None  # Podríamos dejar colonia vacía o asignar "Código postal"
+                    colonia = None
                 save_zona_texto(sender, colonia, cp)
                 zona_texto = colonia if colonia else f"CP {cp}"
 
-            # Ahora procesamos la búsqueda del medicamento pendiente
-            # Reasignamos incoming_msg para que el resto del código lo procese
             incoming_msg = medicamento_pendiente
-            # Y continuamos con el flujo normal de búsqueda
-            # (No retornamos aún, dejamos que siga el código)
 
-        # ---------- A partir de aquí, el usuario tiene zona (o la acabamos de guardar) ----------
-        # Verificar si el usuario tiene zona registrada (si no estaba en pending_zone y no tiene zona, preguntar)
+        # ---------- A partir de aquí, el usuario tiene zona ----------
         usuario = get_usuario(sender)
         tiene_zona = usuario and (usuario.get('colonia') is not None or usuario.get('latitud') is not None)
 
         if not tiene_zona and sender not in pending_zone:
-            # No tiene zona, guardamos el medicamento y preguntamos
             pending_zone[sender] = incoming_msg
+            msg = resp.message()
             msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas? Escribe tu colonia o código postal, o toca el clip 📎 y comparte tu ubicación.")
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- Procesar búsqueda de medicamento (normal) ----------
-        # Si llegamos aquí, el usuario tiene zona o la acabamos de guardar y ahora procesamos el medicamento
+        # --- Procesar búsqueda de medicamento ---
 
-        # --- Manejo de preguntas de seguimiento (contexto) ---
+        # Manejo de preguntas de seguimiento (contexto)
         contexto = user_context.get(sender)
         if contexto:
             pregunta = incoming_msg.lower()
             seguimiento_keywords = ['sí', 'si', 'no', 'genérico', 'generico', 'tarda', 'demora', 'cuánto', 'hay']
             if any(keyword in pregunta for keyword in seguimiento_keywords):
                 respuesta = manejar_pregunta_seguimiento(pregunta, contexto)
+                msg = resp.message()
                 msg.body(respuesta)
                 return Response(str(resp), mimetype="application/xml")
 
-        # Procesar nueva búsqueda
+        # Normalizar medicamento
         resultado = normalizer.normalizar(incoming_msg)
         if "error" in resultado:
+            msg = resp.message()
             msg.body(f"❌ Error: {resultado['error']}")
             return Response(str(resp), mimetype="application/xml")
 
@@ -398,7 +368,7 @@ def whatsapp_webhook():
         nombre_ingresado = resultado.get('nombre_ingresado', incoming_msg).lower()
         medicamento_ref = nombre_generico if nombre_generico else nombre_ingresado
 
-        # Obtener precios recientes
+        # Obtener precios
         precios_recientes = get_resumen(nombre_generico) + get_resumen(nombre_ingresado)
         logging.info(f"Registros recientes obtenidos: {len(precios_recientes)}")
 
@@ -414,12 +384,11 @@ def whatsapp_webhook():
                     precios_recientes.append(p)
             logging.info(f"Registros históricos obtenidos: {len(precios_recientes)}")
 
-        # Filtros (con mejora para delivery)
+        # Filtros
         conn = get_connection()
         try:
             filtrados_coherencia = []
             for p in precios_recientes:
-                # Si es delivery, saltar el filtro de coherencia (nombre_raw puede no coincidir)
                 if p.get('fuente', '').lower() in ['agente_rappi', 'agente_ubereats']:
                     filtrados_coherencia.append(p)
                 elif validar_coherencia_producto(p.get('nombre_raw', ''), medicamento_ref):
@@ -434,7 +403,6 @@ def whatsapp_webhook():
                 else:
                     logging.info(f"Descartado por precio anómalo: ${p['precio']} para {medicamento_ref}")
 
-            # Deduplicación por farmacia + fuente
             mejores = {}
             for p in filtrados_precio:
                 key = (normalizar_farmacia(p['farmacia']).lower(), p.get('fuente', '').lower())
@@ -451,21 +419,40 @@ def whatsapp_webhook():
         farmacias.sort(key=lambda x: x['precio'])
         delivery.sort(key=lambda x: x['precio'])
 
-        # --- Obtener zona del usuario para el pie de página ---
+        # --- Obtener zona del usuario para el pie de página y mapa ---
         usuario_actual = get_usuario(sender)
         if usuario_actual:
             if usuario_actual.get('colonia'):
                 zona_texto = usuario_actual['colonia']
+                # Solo generamos mapa si tenemos colonia (no GPS)
+                colonia_para_mapa = usuario_actual['colonia']
             elif usuario_actual.get('latitud') is not None:
                 zona_texto = f"GPS ({usuario_actual['latitud']:.4f}, {usuario_actual['longitud']:.4f})"
+                colonia_para_mapa = None
             else:
                 zona_texto = "tu zona"
+                colonia_para_mapa = None
         else:
             zona_texto = None
+            colonia_para_mapa = None
 
+        # --- GENERAR MAPA (si hay colonia) ---
+        mapa_url = None
+        if colonia_para_mapa:
+            try:
+                logging.info(f"🗺️ Generando mapa para colonia: {colonia_para_mapa}")
+                mapa_url = obtener_mapa_para_zona_sync(colonia_para_mapa)
+                if mapa_url:
+                    logging.info(f"✅ Mapa obtenido: {mapa_url}")
+                else:
+                    logging.info("ℹ️ No se pudo obtener mapa (falló o no hay caché válido)")
+            except Exception as e:
+                logging.error(f"❌ Error al obtener mapa: {e}")
+                mapa_url = None
+
+        # --- Construir respuesta de texto ---
         if farmacias or delivery:
-            respuesta = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
-            msg.body(respuesta)
+            texto_respuesta = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
             # Guardar contexto
             user_context[sender] = {
                 'medicamento_buscado': nombre_ingresado,
@@ -476,30 +463,20 @@ def whatsapp_webhook():
                 'timestamp': datetime.now(timezone.utc)
             }
         else:
-            # ---------- FALLBACK INTELIGENTE ----------
             principio_activo = obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresado)
             logging.info(f"🔍 Principio activo para búsqueda de alternativas: {principio_activo}")
-
             alternativas = get_alternativas(principio_activo, limit=5)
             logging.info(f"📦 Alternativas encontradas: {len(alternativas)}")
-            if alternativas:
-                logging.info(f"Primera alternativa: {alternativas[0]['nombre']} - ${alternativas[0]['precio']}")
-
             requiere_receta = resultado.get('requiere_receta', False)
-
-            mensaje = construir_mensaje_fallback(
+            texto_respuesta = construir_mensaje_fallback(
                 nombre_ingresado,
                 nombre_generico,
                 requiere_receta,
                 alternativas,
                 principio_activo
             )
-            # También podemos agregar la zona al mensaje fallback
             if zona_texto:
-                mensaje += f"\n📍 Buscando en {zona_texto} · Escribe /zona para cambiar."
-            msg.body(mensaje)
-
-            # Guardar contexto con alternativas
+                texto_respuesta += f"\n📍 Buscando en {zona_texto} · Escribe /zona para cambiar."
             user_context[sender] = {
                 'medicamento_buscado': nombre_ingresado,
                 'nombre_generico': nombre_generico,
@@ -509,6 +486,18 @@ def whatsapp_webhook():
                 'timestamp': datetime.now(timezone.utc)
             }
 
+        # --- ENVIAR RESPUESTA POR WHATSAPP (imagen + texto) ---
+        # Si tenemos mapa_url, enviamos primero la imagen
+        if mapa_url:
+            msg_mapa = resp.message()
+            msg_mapa.media(mapa_url)
+            logging.info(f"🖼️ Enviando imagen del mapa a {sender}")
+
+        # Luego el texto
+        msg_texto = resp.message()
+        msg_texto.body(texto_respuesta)
+
+        # Notificar límite si aplica
         if increment_and_check_limit():
             mensaje_limite = (
                 f"⚠️ *Dr. Ahorro* — Límite diario al 80%\n"
@@ -519,6 +508,7 @@ def whatsapp_webhook():
 
     except Exception as e:
         logging.error(f"Error crítico en webhook: {e}", exc_info=True)
+        msg = resp.message()
         if "429" in str(e) or "Too Many Requests" in str(e):
             msg.body("Alcanzamos el límite de consultas por hoy. Vuelve mañana.")
         else:
