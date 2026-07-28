@@ -92,7 +92,7 @@ def init_db():
             rangos_default
         )
     
-    # --- NUEVA TABLA: usuarios para onboarding ---
+    # --- Tabla de usuarios (existente) ---
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
             id              SERIAL PRIMARY KEY,
@@ -109,9 +109,26 @@ def init_db():
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_whatsapp ON usuarios(whatsapp_number)')
     
+    # ------------------------------------------------------------
+    # ✅ NUEVA TABLA: analisis_busquedas (para reporte del Día 4)
+    # ------------------------------------------------------------
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS analisis_busquedas (
+            id                  SERIAL PRIMARY KEY,
+            usuario             TEXT NOT NULL,
+            medicamento         TEXT NOT NULL,
+            urgente             BOOLEAN DEFAULT FALSE,
+            opcion_ganadora     TEXT,
+            ahorro_vs_delivery  REAL,
+            timestamp           TEXT NOT NULL
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_analisis_usuario ON analisis_busquedas(usuario)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_analisis_timestamp ON analisis_busquedas(timestamp)')
+    
     conn.commit()
     conn.close()
-    logger.info("📦 Base de datos inicializada correctamente (tablas precios, rangos, usuarios)")
+    logger.info("📦 Base de datos inicializada correctamente (tablas precios, rangos, usuarios, analisis_busquedas)")
 
 # ============================================================
 # FUNCIONES DE NORMALIZACIÓN (ya existentes)
@@ -385,7 +402,7 @@ def contar_por_fuente():
     return resultado
 
 # ============================================================
-# NUEVAS FUNCIONES PARA EL ONBOARDING DE USUARIOS
+# FUNCIONES PARA EL ONBOARDING DE USUARIOS (existentes)
 # ============================================================
 
 def get_usuario(whatsapp_number: str) -> Optional[Dict[str, Any]]:
@@ -521,9 +538,6 @@ def actualizar_zona(
     _save_usuario(whatsapp_number, data)
     logger.info(f"🔄 Zona actualizada para {whatsapp_number}: {data}")
 
-# ------------------------------------------------------------
-# NUEVA FUNCIÓN: clear_zona (para el comando /zona)
-# ------------------------------------------------------------
 def clear_zona(whatsapp_number: str):
     """
     Elimina la zona guardada del usuario (colonia, CP, latitud, longitud)
@@ -539,3 +553,51 @@ def clear_zona(whatsapp_number: str):
     }
     _save_usuario(whatsapp_number, data)
     logger.info(f"🧹 Zona limpiada para {whatsapp_number}")
+
+# ============================================================
+# ✅ NUEVA FUNCIÓN: GUARDAR ANÁLISIS DE COSTO‑BENEFICIO
+# ============================================================
+
+def guardar_analisis(
+    usuario: str,
+    medicamento: str,
+    urgente: bool,
+    opcion_ganadora: Optional[str],
+    ahorro_vs_delivery: float,
+    timestamp: Optional[datetime] = None
+):
+    """
+    Inserta un registro en la tabla analisis_busquedas.
+    Si timestamp es None, usa datetime.now(timezone.utc).
+    """
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc)
+    timestamp_str = timestamp.isoformat()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        if IS_PROD:
+            cursor.execute(
+                """
+                INSERT INTO analisis_busquedas
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp_str)
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO analisis_busquedas
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp_str)
+            )
+        conn.commit()
+        logger.info(f"✅ Análisis guardado para {usuario}: {medicamento}, urgente={urgente}, ganadora={opcion_ganadora}")
+    except Exception as e:
+        logger.error(f"❌ Error guardando análisis en BD: {e}")
+    finally:
+        conn.close()
