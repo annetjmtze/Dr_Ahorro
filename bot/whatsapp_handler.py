@@ -19,6 +19,9 @@ from bot.counter import increment_and_check_limit, is_limit_reached, LIMITE_DIAR
 from bot.telegram_notifier import send_telegram_message
 from data.agents.maps_agent import obtener_mapa_para_zona_sync
 
+# ✅ NUEVO: Importar el motor de costo‑beneficio
+from data.analytics.costo_beneficio import calcular_recomendacion
+
 load_dotenv()
 
 IS_PROD = os.getenv("DATABASE_URL") is not None
@@ -155,6 +158,30 @@ def limpiar_contexto_expirado():
     for k in expirados:
         del user_context[k]
 
+# ✅ NUEVO: Función para guardar el análisis en la tabla
+def guardar_analisis(usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        if IS_PROD:
+            cursor.execute("""
+                INSERT INTO analisis_busquedas 
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp))
+        else:
+            cursor.execute("""
+                INSERT INTO analisis_busquedas 
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp))
+        conn.commit()
+        logging.info(f"Análisis guardado para {usuario}: {medicamento}, urgente={urgente}")
+    except Exception as e:
+        logging.error(f"Error guardando análisis: {e}")
+    finally:
+        conn.close()
+
 # ------------------------------------------------------------
 #  FORMATEO DE RESPUESTA
 # ------------------------------------------------------------
@@ -250,7 +277,7 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, z
     return "\n".join(lines)
 
 # ------------------------------------------------------------
-#  WEBHOOK PRINCIPAL (CORREGIDO)
+#  WEBHOOK PRINCIPAL (CORREGIDO CON INTEGRACIÓN DE COSTO-BENEFICIO)
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():
@@ -287,22 +314,17 @@ def whatsapp_webhook():
             return Response(str(resp), mimetype="application/xml")
 
         # ---------- DETECCIÓN DE CP (siempre, incluso si ya tiene zona) ----------
-        # Si el mensaje es un número de 5-6 dígitos y no es un medicamento conocido,
-        # lo tratamos como código postal para actualizar la zona.
         es_cp = incoming_msg.isdigit() and len(incoming_msg) in [5, 6]
 
-        # Si es CP, actualizar zona y responder confirmación, luego esperar medicamento
         if es_cp and sender not in pending_zone:
-            # Guardar CP como zona
             save_zona_texto(sender, None, incoming_msg, None)
-            # Limpiar contexto y pending
             user_context.pop(sender, None)
             pending_zone.pop(sender, None)
             msg = resp.message()
             msg.body(f"✅ Código postal {incoming_msg} guardado. Ahora escribe el nombre de un medicamento para buscar precios.")
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- GPS (si se comparte ubicación) ----------
+        # ---------- GPS ----------
         if is_gps and sender not in pending_zone:
             save_zona_gps(sender, float(lat), float(lon))
             user_context.pop(sender, None)
@@ -311,7 +333,7 @@ def whatsapp_webhook():
             msg.body("✅ Ubicación GPS guardada. Ahora escribe el nombre de un medicamento para buscar precios.")
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- RESPUESTA A ZONA (cuando el usuario está en pending_zone) ----------
+        # ---------- RESPUESTA A ZONA ----------
         if sender in pending_zone:
             medicamento_pendiente = pending_zone.pop(sender)
             zona_texto = None
@@ -340,7 +362,7 @@ def whatsapp_webhook():
 
             user_context.pop(sender, None)
 
-        # ---------- VERIFICAR SI EL USUARIO TIENE ZONA ----------
+        # ---------- VERIFICAR ZONA ----------
         usuario = get_usuario(sender)
         tiene_zona = usuario and (
             usuario.get('colonia') is not None or 
@@ -348,7 +370,6 @@ def whatsapp_webhook():
             usuario.get('latitud') is not None
         )
 
-        # Si no tiene zona, preguntar y guardar medicamento en pending
         if not tiene_zona and sender not in pending_zone:
             pending_zone[sender] = incoming_msg
             msg = resp.message()
@@ -357,7 +378,7 @@ def whatsapp_webhook():
                      "También puedes tocar el clip 📎 y compartir tu ubicación.")
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- PROCESAR BÚSQUEDA DE MEDICAMENTO ----------
+        # ---------- PROCESAR BÚSQUEDA ----------
 
         # Manejo de preguntas de seguimiento
         contexto = user_context.get(sender)
@@ -375,7 +396,7 @@ def whatsapp_webhook():
             else:
                 user_context.pop(sender, None)
 
-        # Normalizar medicamento
+        # Normalizar medicamento (AHORA incluye 'urgente')
         resultado = normalizer.normalizar(incoming_msg)
         if "error" in resultado:
             msg = resp.message()
@@ -385,6 +406,10 @@ def whatsapp_webhook():
         nombre_generico = resultado.get('nombre_generico', '').lower()
         nombre_ingresado = resultado.get('nombre_ingresado', incoming_msg).lower()
         medicamento_ref = nombre_generico if nombre_generico else nombre_ingresado
+
+        # ✅ NUEVO: Obtener flag de urgencia
+        urgente = resultado.get('urgente', False)
+        logging.info(f"Urgencia detectada: {urgente}")
 
         # Obtener precios
         precios_recientes = get_resumen(nombre_generico) + get_resumen(nombre_ingresado)
@@ -431,13 +456,57 @@ def whatsapp_webhook():
         finally:
             conn.close()
 
+        # Separar delivery y farmacias
         delivery = [p for p in precios_depurados if p.get('fuente', '').lower() in ['agente_rappi', 'agente_ubereats']]
         farmacias = [p for p in precios_depurados if p.get('fuente', '').lower() not in ['agente_rappi', 'agente_ubereats']]
 
         farmacias.sort(key=lambda x: x['precio'])
         delivery.sort(key=lambda x: x['precio'])
 
-        # --- OBTENER ZONA DEL USUARIO PARA EL MAPA ---
+        # ------------------------------------------------------------
+        #  ✅ NUEVO: INTEGRACIÓN DEL MOTOR DE COSTO‑BENEFICIO
+        # ------------------------------------------------------------
+
+        # Preparar datos para el motor
+        # farmacias_bd: lista de dicts con 'nombre' y 'precio'
+        farmacias_bd = [{"nombre": p["farmacia"], "precio": p["precio"]} for p in farmacias]
+
+        # delivery_opts: lista de dicts con 'nombre' y 'precio_total' (incluye envío)
+        # Asumimos un costo de envío fijo de $30 MXN (puede ajustarse)
+        ENVIO_ESTIMADO = 30.0
+        delivery_opts = [{"nombre": p["farmacia"], "precio_total": p["precio"] + ENVIO_ESTIMADO} for p in delivery]
+
+        # farmacias_mapa: extraer del screenshot. Por ahora, lista vacía.
+        # En el futuro, se puede implementar OCR para extraer los nombres.
+        farmacias_mapa = []  # ⚠️ Pendiente de implementar con OCR
+        # En whatsapp_handler.py, antes de la línea 484
+        logging.info(f"📊 farmacias_bd: {farmacias_bd}")
+        logging.info(f"📊 delivery_opts: {delivery_opts}")
+        logging.info(f"📊 farmacias_mapa: {farmacias_mapa}")
+        # Ejecutar cálculo de recomendación
+        recomendacion = calcular_recomendacion(
+            farmacias_bd=farmacias_bd,
+            delivery=delivery_opts,
+            farmacias_mapa=farmacias_mapa,
+            urgente=urgente
+        )
+
+        # Guardar el análisis en la tabla
+        try:
+            guardar_analisis(
+                usuario=sender,
+                medicamento=nombre_generico or nombre_ingresado,
+                urgente=urgente,
+                opcion_ganadora=recomendacion.get("opcion_ganadora"),
+                ahorro_vs_delivery=recomendacion.get("ahorro_vs_delivery", 0.0),
+                timestamp=datetime.now(timezone.utc)
+            )
+        except Exception as e:
+            logging.error(f"Error guardando análisis: {e}")
+
+        # ------------------------------------------------------------
+        #  OBTENER ZONA Y MAPA
+        # ------------------------------------------------------------
         usuario_actual = get_usuario(sender)
         if usuario_actual:
             if usuario_actual.get('colonia') and usuario_actual.get('ciudad'):
@@ -483,7 +552,7 @@ def whatsapp_webhook():
             lat_para_mapa = None
             lon_para_mapa = None
 
-        # --- GENERAR MAPA ---
+        # Generar mapa
         mapa_url = None
         if colonia_para_mapa and ciudad_para_mapa:
             try:
@@ -512,9 +581,13 @@ def whatsapp_webhook():
         else:
             logging.info("ℹ️ No se pudo obtener mapa (falló o no hay caché válido)")
 
-        # --- CONSTRUIR RESPUESTA DE TEXTO ---
+        # ------------------------------------------------------------
+        #  CONSTRUIR RESPUESTA DE TEXTO (con recomendación al final)
+        # ------------------------------------------------------------
         if farmacias or delivery:
-            texto_respuesta = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
+            texto_ranking = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
+            # ✅ NUEVO: Añadir la recomendación al final
+            texto_respuesta = texto_ranking + "\n\n" + recomendacion["texto_recomendacion"]
             user_context[sender] = {
                 'medicamento_buscado': nombre_ingresado,
                 'nombre_generico': nombre_generico,
@@ -538,6 +611,8 @@ def whatsapp_webhook():
             )
             if zona_texto:
                 texto_respuesta += f"\n📍 Buscando en {zona_texto} · Escribe /zona para cambiar."
+            # ✅ NUEVO: También agregar recomendación en caso de no encontrar precios
+            texto_respuesta += "\n\n" + recomendacion["texto_recomendacion"]
             user_context[sender] = {
                 'medicamento_buscado': nombre_ingresado,
                 'nombre_generico': nombre_generico,
