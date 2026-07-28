@@ -298,7 +298,8 @@ def whatsapp_webhook():
         if incoming_msg.lower() == "/zona":
             clear_zona(sender)
             msg = resp.message()
-            msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas? Escribe tu colonia o código postal, o toca el clip 📎 y comparte tu ubicación.")
+            msg.body("📍 Para actualizar tu zona, escribe tu colonia y ciudad (ej. 'Del Valle, CDMX') o tu código postal.\n"
+                     "O toca el clip 📎 y comparte tu ubicación.")
             pending_zone.pop(sender, None)
             pending_colonia.pop(sender, None)
             return Response(str(resp), mimetype="application/xml")
@@ -325,8 +326,9 @@ def whatsapp_webhook():
                 save_zona_texto(sender, None, colonia_info['valor'], ciudad)
                 zona_texto = f"CP {colonia_info['valor']}, {ciudad}"
 
+            # Asignar incoming_msg para continuar con la búsqueda
             incoming_msg = medicamento_pendiente
-            # Continuar con la búsqueda
+            # No retornamos, seguimos al procesamiento del medicamento
 
         # ---------- SI EL USUARIO ESTÁ EN pending_zone (respondiendo colonia/CP) ----------
         elif sender in pending_zone:
@@ -369,7 +371,9 @@ def whatsapp_webhook():
         if not tiene_zona and sender not in pending_zone:
             pending_zone[sender] = incoming_msg
             msg = resp.message()
-            msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas? Escribe tu colonia o código postal, o toca el clip 📎 y comparte tu ubicación.")
+            msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas?\n"
+                     "Escribe tu colonia y ciudad (ej. 'Del Valle, CDMX') o tu código postal.\n"
+                     "También puedes tocar el clip 📎 y compartir tu ubicación.")
             return Response(str(resp), mimetype="application/xml")
 
         # --- PROCESAR BÚSQUEDA DE MEDICAMENTO ---
