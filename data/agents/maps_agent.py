@@ -49,21 +49,24 @@ def get_r2_client():
         region_name='auto'
     )
 
-def generar_key_zona(zona: str, ciudad: str = "") -> str:
-    """Genera una clave única para la zona+ciudad usando hash."""
-    base = f"{zona}_{ciudad}".lower().strip()
+def generar_key_para_busqueda(zona: str = "", ciudad: str = "", lat: float = None, lon: float = None) -> str:
+    """Genera una clave única para la búsqueda (puede ser colonia+ciudad o coordenadas)."""
+    if lat is not None and lon is not None:
+        base = f"gps_{lat:.6f}_{lon:.6f}"
+    else:
+        base = f"{zona}_{ciudad}".lower().strip()
     base_limpia = base.replace(' ', '_').replace(',', '').replace('.', '')
     hash_obj = hashlib.md5(base.encode('utf-8')).hexdigest()[:8]
     return f"mapas/{base_limpia}_{hash_obj}.png"
 
-def obtener_imagen_cacheada(zona: str, ciudad: str = "Ciudad de México") -> Optional[Tuple[str, datetime]]:
+def obtener_imagen_cacheada(zona: str = "", ciudad: str = "", lat: float = None, lon: float = None) -> Optional[Tuple[str, datetime]]:
     try:
         client = get_r2_client()
     except ValueError as e:
         logger.error(f"❌ Error al obtener cliente R2: {e}")
         return None
 
-    key = generar_key_zona(zona, ciudad)
+    key = generar_key_para_busqueda(zona, ciudad, lat, lon)
     try:
         head = client.head_object(Bucket=R2_BUCKET, Key=key)
         last_modified = head['LastModified']
@@ -72,23 +75,23 @@ def obtener_imagen_cacheada(zona: str, ciudad: str = "Ciudad de México") -> Opt
             url_publica = f"{R2_PUBLIC_URL}/{key}"
             return (url_publica, last_modified)
         else:
-            logger.info(f"🗑️ Caché expirado para {zona}, {ciudad}")
+            logger.info(f"🗑️ Caché expirado para {key}")
             return None
     except ClientError as e:
         if e.response['Error']['Code'] == 'NoSuchKey':
-            logger.info(f"📭 No hay caché para {zona}, {ciudad}")
+            logger.info(f"📭 No hay caché para {key}")
         else:
             logger.error(f"❌ Error al verificar caché: {e}")
         return None
 
-def guardar_imagen_en_r2(zona: str, ciudad: str, imagen_bytes: bytes) -> str:
+def guardar_imagen_en_r2(zona: str = "", ciudad: str = "", lat: float = None, lon: float = None, imagen_bytes: bytes = None) -> str:
     try:
         client = get_r2_client()
     except ValueError as e:
         logger.error(f"❌ Error al obtener cliente R2: {e}")
         raise
 
-    key = generar_key_zona(zona, ciudad)
+    key = generar_key_para_busqueda(zona, ciudad, lat, lon)
     try:
         client.put_object(
             Bucket=R2_BUCKET,
@@ -104,11 +107,26 @@ def guardar_imagen_en_r2(zona: str, ciudad: str, imagen_bytes: bytes) -> str:
         logger.error(f"❌ Error al guardar imagen: {e}")
         raise
 
-async def capturar_mapa_farmacias(zona: str, ciudad: str = "Ciudad de México") -> Optional[bytes]:
+async def capturar_mapa_farmacias(
+    zona: str = None,
+    ciudad: str = None,
+    lat: float = None,
+    lon: float = None
+) -> Optional[bytes]:
     try:
-        # 🔥 Aquí usamos la ciudad en la búsqueda
-        query = f"farmacias cerca de {zona}, {ciudad}"
+        # Construir la URL de búsqueda
+        if lat is not None and lon is not None:
+            query = f"farmacias cerca de {lat},{lon}"
+        elif zona and ciudad:
+            query = f"farmacias cerca de {zona}, {ciudad}"
+        elif zona:
+            query = f"farmacias cerca de {zona}"
+        else:
+            logger.error("❌ No hay suficiente información para generar el mapa (falta zona/ciudad o GPS)")
+            return None
+
         url = f"https://www.google.com/maps/search/{query}"
+        logger.info(f"🗺️ Abriendo Google Maps: {url}")
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -135,30 +153,41 @@ async def capturar_mapa_farmacias(zona: str, ciudad: str = "Ciudad de México") 
         logger.error(f"❌ Error en capturar_mapa_farmacias: {e}")
         return None
 
-async def obtener_mapa_para_zona(zona: str, ciudad: str = "Ciudad de México") -> Optional[str]:
-    cached = obtener_imagen_cacheada(zona, ciudad)
+async def obtener_mapa_para_zona(
+    zona: str = None,
+    ciudad: str = None,
+    lat: float = None,
+    lon: float = None
+) -> Optional[str]:
+    # Verificar caché
+    cached = obtener_imagen_cacheada(zona, ciudad, lat, lon)
     if cached:
         url, fecha = cached
-        logger.info(f"♻️ Usando caché para {zona}, {ciudad} (generado: {fecha})")
+        logger.info(f"♻️ Usando caché para {zona} {ciudad} {lat} {lon} (generado: {fecha})")
         return url
 
-    logger.info(f"🆕 Generando nuevo mapa para {zona}, {ciudad}")
-    imagen_bytes = await capturar_mapa_farmacias(zona, ciudad)
+    logger.info(f"🆕 Generando nuevo mapa para {zona} {ciudad} {lat} {lon}")
+    imagen_bytes = await capturar_mapa_farmacias(zona, ciudad, lat, lon)
     if imagen_bytes is None:
         return None
 
     try:
-        url_publica = guardar_imagen_en_r2(zona, ciudad, imagen_bytes)
+        url_publica = guardar_imagen_en_r2(zona, ciudad, lat, lon, imagen_bytes)
         return url_publica
     except Exception as e:
         logger.error(f"❌ No se pudo guardar la imagen: {e}")
         return None
 
-def obtener_mapa_para_zona_sync(zona: str, ciudad: str = "Ciudad de México") -> Optional[str]:
+def obtener_mapa_para_zona_sync(
+    zona: str = None,
+    ciudad: str = None,
+    lat: float = None,
+    lon: float = None
+) -> Optional[str]:
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        return loop.run_until_complete(obtener_mapa_para_zona(zona, ciudad))
+        return loop.run_until_complete(obtener_mapa_para_zona(zona, ciudad, lat, lon))
     except Exception as e:
         logger.error(f"Error en obtener_mapa_para_zona_sync: {e}")
         return None

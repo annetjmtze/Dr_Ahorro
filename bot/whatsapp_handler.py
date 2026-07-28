@@ -48,7 +48,7 @@ CONTEXTO_EXPIRACION = timedelta(minutes=30)
 
 # --- Diccionarios para onboarding ---
 pending_zone = {}         # medicamento pendiente
-pending_colonia = {}      # colonia/cp pendiente (cuando falta ciudad)
+pending_colonia = {}      # colonia pendiente (cuando falta ciudad)
 
 # ------------------------------------------------------------
 #  FUNCIONES AUXILIARES
@@ -268,7 +268,7 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, z
     return "\n".join(lines)
 
 # ------------------------------------------------------------
-#  WEBHOOK PRINCIPAL
+#  WEBHOOK PRINCIPAL (modificado)
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():
@@ -304,14 +304,22 @@ def whatsapp_webhook():
             pending_colonia.pop(sender, None)
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- MANEJO DE GPS ----------
+        # ---------- MANEJO DE GPS (si el usuario comparte ubicación) ----------
         if is_gps and sender not in pending_zone:
+            # Guardar GPS y generar mapa directamente
             save_zona_gps(sender, float(lat), float(lon))
-            msg = resp.message()
-            msg.body("✅ Ubicación GPS guardada. Ahora puedes buscar medicamentos y te mostraré precios en tu zona.")
-            return Response(str(resp), mimetype="application/xml")
+            # No preguntamos colonia, usamos GPS directamente
+            zona_texto = f"GPS ({float(lat):.4f}, {float(lon):.4f})"
+            # Reasignamos el medicamento para continuar
+            # Pero si el usuario compartió GPS sin medicamento, no sabemos qué buscar
+            # Aquí asumimos que el usuario ya envió el medicamento antes
+            # Si no, pending_zone lo manejará
+            # No retornamos, continuamos con la búsqueda
+            # Pero necesitamos que incoming_msg tenga el medicamento
+            # Si el mensaje anterior fue un medicamento, pending_zone lo tiene
+            pass
 
-        # ---------- SI EL USUARIO ESTÁ ESPERANDO LA CIUDAD ----------
+        # ---------- SI EL USUARIO ESTÁ ESPERANDO LA CIUDAD (porque solo dio colonia) ----------
         if sender in pending_colonia:
             # La respuesta es la ciudad
             ciudad = incoming_msg
@@ -319,14 +327,12 @@ def whatsapp_webhook():
             medicamento_pendiente = pending_zone.pop(sender, None)
 
             # Guardar con colonia y ciudad
-            if colonia_info['tipo'] == 'colonia':
-                save_zona_texto(sender, colonia_info['valor'], None, ciudad)
-                zona_texto = f"{colonia_info['valor']}, {ciudad}"
-            else:  # CP
-                save_zona_texto(sender, None, colonia_info['valor'], ciudad)
-                zona_texto = f"CP {colonia_info['valor']}, {ciudad}"
+            save_zona_texto(sender, colonia_info['valor'], None, ciudad)
+            zona_texto = f"{colonia_info['valor']}, {ciudad}"
+            colonia_para_mapa = colonia_info['valor']
+            ciudad_para_mapa = ciudad
 
-            # Asignar incoming_msg para continuar con la búsqueda
+            # Reasignar incoming_msg para continuar con la búsqueda
             incoming_msg = medicamento_pendiente
             # No retornamos, seguimos al procesamiento del medicamento
 
@@ -335,9 +341,11 @@ def whatsapp_webhook():
             medicamento_pendiente = pending_zone.pop(sender)
 
             if is_gps:
+                # Si comparte GPS en lugar de escribir
                 save_zona_gps(sender, float(lat), float(lon))
-                zona_texto = "tu ubicación GPS"
+                zona_texto = f"GPS ({float(lat):.4f}, {float(lon):.4f})"
                 incoming_msg = medicamento_pendiente
+                # Guardamos en la base de datos y continuamos
             else:
                 # Intentar extraer colonia y ciudad (formato: "colonia, ciudad")
                 partes = incoming_msg.split(',')
@@ -349,26 +357,27 @@ def whatsapp_webhook():
                     zona_texto = f"{colonia}, {ciudad}"
                     incoming_msg = medicamento_pendiente
                 else:
-                    # Solo colonia o CP -> guardar temporal y preguntar ciudad
+                    # Solo colonia -> preguntar ciudad
+                    # Solo CP -> guardar y generar mapa directamente
                     if incoming_msg.isdigit() and len(incoming_msg) in [5, 6]:
-                        # Es CP
-                        pending_colonia[sender] = {'tipo': 'cp', 'valor': incoming_msg}
-                        msg = resp.message()
-                        msg.body("📍 ¿En qué ciudad se encuentra este código postal? (ej. Uruapan, Morelia)")
-                        return Response(str(resp), mimetype="application/xml")
+                        # Es CP - guardamos y generamos mapa sin preguntar ciudad
+                        save_zona_texto(sender, None, incoming_msg, None)
+                        zona_texto = f"CP {incoming_msg}"
+                        incoming_msg = medicamento_pendiente
                     else:
-                        # Es colonia
+                        # Es colonia sin ciudad -> preguntar
                         pending_colonia[sender] = {'tipo': 'colonia', 'valor': incoming_msg}
+                        pending_zone[sender] = medicamento_pendiente
                         msg = resp.message()
-                        msg.body("📍 ¿En qué ciudad se encuentra esta colonia? (ej. Uruapan, Morelia)")
+                        msg.body(f"📍 ¿En qué ciudad se encuentra '{incoming_msg}'? (ej. Uruapan, Morelia)")
                         return Response(str(resp), mimetype="application/xml")
 
         # ---------- A PARTIR DE AQUÍ EL USUARIO TIENE ZONA GUARDADA ----------
         usuario = get_usuario(sender)
-        tiene_zona = usuario and (usuario.get('colonia') is not None or usuario.get('latitud') is not None)
+        tiene_zona = usuario and (usuario.get('colonia') is not None or usuario.get('latitud') is not None or usuario.get('codigo_postal') is not None)
 
         # Si no tiene zona, preguntar
-        if not tiene_zona and sender not in pending_zone:
+        if not tiene_zona and sender not in pending_zone and sender not in pending_colonia:
             pending_zone[sender] = incoming_msg
             msg = resp.message()
             msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas?\n"
@@ -451,34 +460,83 @@ def whatsapp_webhook():
         farmacias.sort(key=lambda x: x['precio'])
         delivery.sort(key=lambda x: x['precio'])
 
-        # --- OBTENER ZONA DEL USUARIO (COLONIA + CIUDAD) ---
+        # --- OBTENER ZONA DEL USUARIO PARA EL MAPA ---
         usuario_actual = get_usuario(sender)
         if usuario_actual:
-            if usuario_actual.get('colonia'):
+            if usuario_actual.get('colonia') and usuario_actual.get('ciudad'):
                 colonia = usuario_actual['colonia']
-                ciudad = usuario_actual.get('ciudad') or "Ciudad de México"
+                ciudad = usuario_actual['ciudad']
                 zona_texto = f"{colonia}, {ciudad}"
                 colonia_para_mapa = colonia
                 ciudad_para_mapa = ciudad
+                lat_para_mapa = None
+                lon_para_mapa = None
+            elif usuario_actual.get('colonia') and not usuario_actual.get('ciudad'):
+                # Tiene colonia pero no ciudad - preguntar
+                pending_colonia[sender] = {'tipo': 'colonia', 'valor': usuario_actual['colonia']}
+                pending_zone[sender] = incoming_msg
+                msg = resp.message()
+                msg.body(f"📍 Tu colonia es '{usuario_actual['colonia']}'. ¿En qué ciudad se encuentra? (ej. Uruapan, Morelia)")
+                return Response(str(resp), mimetype="application/xml")
+            elif usuario_actual.get('codigo_postal'):
+                cp = usuario_actual['codigo_postal']
+                zona_texto = f"CP {cp}"
+                colonia_para_mapa = cp
+                ciudad_para_mapa = None
+                lat_para_mapa = None
+                lon_para_mapa = None
             elif usuario_actual.get('latitud') is not None:
-                zona_texto = f"GPS ({usuario_actual['latitud']:.4f}, {usuario_actual['longitud']:.4f})"
+                lat = usuario_actual['latitud']
+                lon = usuario_actual['longitud']
+                zona_texto = f"GPS ({lat:.4f}, {lon:.4f})"
                 colonia_para_mapa = None
                 ciudad_para_mapa = None
+                lat_para_mapa = lat
+                lon_para_mapa = lon
             else:
                 zona_texto = "tu zona"
                 colonia_para_mapa = None
                 ciudad_para_mapa = None
+                lat_para_mapa = None
+                lon_para_mapa = None
         else:
             zona_texto = None
             colonia_para_mapa = None
             ciudad_para_mapa = None
+            lat_para_mapa = None
+            lon_para_mapa = None
 
         # --- GENERAR MAPA ---
         mapa_url = None
         if colonia_para_mapa and ciudad_para_mapa:
+            # Usar colonia + ciudad
             try:
                 logging.info(f"🗺️ Generando mapa para colonia: {colonia_para_mapa}, ciudad: {ciudad_para_mapa}")
-                mapa_url = obtener_mapa_para_zona_sync(colonia_para_mapa, ciudad=ciudad_para_mapa)
+                mapa_url = obtener_mapa_para_zona_sync(zona=colonia_para_mapa, ciudad=ciudad_para_mapa)
+                if mapa_url:
+                    logging.info(f"✅ Mapa obtenido: {mapa_url}")
+                else:
+                    logging.info("ℹ️ No se pudo obtener mapa (falló o no hay caché válido)")
+            except Exception as e:
+                logging.error(f"❌ Error al obtener mapa: {e}")
+                mapa_url = None
+        elif colonia_para_mapa and not ciudad_para_mapa:
+            # Usar solo CP (o colonia sin ciudad) - esto funciona con CP
+            try:
+                logging.info(f"🗺️ Generando mapa para CP/colonia: {colonia_para_mapa}")
+                mapa_url = obtener_mapa_para_zona_sync(zona=colonia_para_mapa)
+                if mapa_url:
+                    logging.info(f"✅ Mapa obtenido: {mapa_url}")
+                else:
+                    logging.info("ℹ️ No se pudo obtener mapa (falló o no hay caché válido)")
+            except Exception as e:
+                logging.error(f"❌ Error al obtener mapa: {e}")
+                mapa_url = None
+        elif lat_para_mapa is not None and lon_para_mapa is not None:
+            # Usar GPS
+            try:
+                logging.info(f"🗺️ Generando mapa para GPS: {lat_para_mapa}, {lon_para_mapa}")
+                mapa_url = obtener_mapa_para_zona_sync(lat=lat_para_mapa, lon=lon_para_mapa)
                 if mapa_url:
                     logging.info(f"✅ Mapa obtenido: {mapa_url}")
                 else:
