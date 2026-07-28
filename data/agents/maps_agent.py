@@ -53,23 +53,24 @@ def get_r2_client():
     )
 
 # ============================================================
-# GENERACIÓN DE CLAVE PARA CACHÉ
+# GENERACIÓN DE CLAVE PARA CACHÉ (CON _mx PARA FORZAR NUEVA)
 # ============================================================
 def generar_key_para_busqueda(zona: str = "", ciudad: str = "", lat: float = None, lon: float = None) -> str:
     if lat is not None and lon is not None:
-        base = f"gps_{lat:.6f}_{lon:.6f}"
+        # 🔥 CAMBIO: añadimos _mx para forzar regeneración con URL correcta
+        base = f"gps_{lat:.6f}_{lon:.6f}_mx"
     elif zona and ciudad:
-        base = f"{zona}_{ciudad}".lower().strip()
+        base = f"{zona}_{ciudad}_mx".lower().strip()
     elif zona:
-        base = f"{zona}".lower().strip()
+        base = f"{zona}_mx".lower().strip()
     else:
-        base = "unknown"
+        base = "unknown_mx"
     base_limpia = base.replace(' ', '_').replace(',', '').replace('.', '')
     hash_obj = hashlib.md5(base.encode('utf-8')).hexdigest()[:8]
     return f"mapas/{base_limpia}_{hash_obj}.png"
 
 # ============================================================
-# FUNCIONES DE CACHÉ
+# FUNCIONES DE CACHÉ (sin cambios)
 # ============================================================
 def obtener_imagen_cacheada(zona: str = "", ciudad: str = "", lat: float = None, lon: float = None) -> Optional[Tuple[str, datetime]]:
     try:
@@ -120,7 +121,7 @@ def guardar_imagen_en_r2(zona: str = "", ciudad: str = "", lat: float = None, lo
         raise
 
 # ============================================================
-# CAPTURA DE MAPA CON PLAYWRIGHT
+# CAPTURA DE MAPA CON PLAYWRIGHT (sin cambios, ya correcta)
 # ============================================================
 async def capturar_mapa_farmacias(
     zona: str = None,
@@ -129,21 +130,17 @@ async def capturar_mapa_farmacias(
     lon: float = None
 ) -> Optional[bytes]:
     try:
-        # Construir la URL según el tipo de búsqueda
         if lat is not None and lon is not None:
             # GPS: usar solo coordenadas + México
             query = f"{lat},{lon} México"
         elif zona and ciudad:
-            # Colonia + ciudad
             query = f"farmacias cerca de {zona}, {ciudad} México"
         elif zona:
-            # Solo zona (puede ser colonia o CP) + México
             query = f"farmacias cerca de {zona} México"
         else:
             logger.error("❌ No hay suficiente información para generar el mapa")
             return None
 
-        # Codificar la URL
         url = f"https://www.google.com/maps/search/{urllib.parse.quote(query)}"
         logger.info(f"🗺️ Abriendo Google Maps: {url}")
 

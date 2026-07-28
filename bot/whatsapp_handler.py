@@ -33,7 +33,7 @@ CONTEXTO_EXPIRACION = timedelta(minutes=30)
 pending_zone = {}  # Número -> medicamento pendiente
 
 # ------------------------------------------------------------
-#  FUNCIONES AUXILIARES (sin cambios)
+#  FUNCIONES AUXILIARES
 # ------------------------------------------------------------
 
 def obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresado):
@@ -146,8 +146,7 @@ def manejar_pregunta_seguimiento(pregunta: str, contexto: dict) -> str:
     elif 'tarda' in pregunta or 'cuánto' in pregunta:
         return "Normalmente actualizamos los precios en 24-48 horas. Te notificaremos en cuanto tengamos novedades. ¿Quieres que te avise?"
     else:
-        # Si no es ninguna de las anteriores, no es una pregunta de seguimiento válida
-        return None
+        return None  # No es una pregunta de seguimiento válida
 
 def limpiar_contexto_expirado():
     ahora = datetime.now(timezone.utc)
@@ -280,7 +279,6 @@ def whatsapp_webhook():
         # ---------- COMANDO /zona ----------
         if incoming_msg.lower() == "/zona":
             clear_zona(sender)
-            # Limpiar contexto y pending
             user_context.pop(sender, None)
             pending_zone.pop(sender, None)
             msg = resp.message()
@@ -288,11 +286,27 @@ def whatsapp_webhook():
                      "También puedes tocar el clip 📎 y compartir tu ubicación.")
             return Response(str(resp), mimetype="application/xml")
 
+        # ---------- DETECCIÓN DE CP (siempre, incluso si ya tiene zona) ----------
+        # Si el mensaje es un número de 5-6 dígitos y no es un medicamento conocido,
+        # lo tratamos como código postal para actualizar la zona.
+        es_cp = incoming_msg.isdigit() and len(incoming_msg) in [5, 6]
+
+        # Si es CP, actualizar zona y responder confirmación, luego esperar medicamento
+        if es_cp and sender not in pending_zone:
+            # Guardar CP como zona
+            save_zona_texto(sender, None, incoming_msg, None)
+            # Limpiar contexto y pending
+            user_context.pop(sender, None)
+            pending_zone.pop(sender, None)
+            msg = resp.message()
+            msg.body(f"✅ Código postal {incoming_msg} guardado. Ahora escribe el nombre de un medicamento para buscar precios.")
+            return Response(str(resp), mimetype="application/xml")
+
         # ---------- GPS (si se comparte ubicación) ----------
         if is_gps and sender not in pending_zone:
             save_zona_gps(sender, float(lat), float(lon))
-            # Limpiar contexto previo para evitar interferencia
             user_context.pop(sender, None)
+            pending_zone.pop(sender, None)
             msg = resp.message()
             msg.body("✅ Ubicación GPS guardada. Ahora escribe el nombre de un medicamento para buscar precios.")
             return Response(str(resp), mimetype="application/xml")
@@ -303,19 +317,16 @@ def whatsapp_webhook():
             zona_texto = None
 
             if is_gps:
-                # Guardar GPS y continuar
                 save_zona_gps(sender, float(lat), float(lon))
                 zona_texto = f"GPS ({float(lat):.4f}, {float(lon):.4f})"
                 incoming_msg = medicamento_pendiente
             else:
                 texto = incoming_msg
-                # Detectar CP (solo dígitos de 5-6)
                 if texto.isdigit() and len(texto) in [5, 6]:
                     save_zona_texto(sender, None, texto, None)
                     zona_texto = f"CP {texto}"
                     incoming_msg = medicamento_pendiente
                 elif ',' in texto:
-                    # Formato "colonia, ciudad"
                     colonia, ciudad = texto.split(',', 1)
                     colonia = colonia.strip()
                     ciudad = ciudad.strip()
@@ -323,14 +334,11 @@ def whatsapp_webhook():
                     zona_texto = f"{colonia}, {ciudad}"
                     incoming_msg = medicamento_pendiente
                 else:
-                    # Solo colonia (sin ciudad) -> guardar con ciudad None
                     save_zona_texto(sender, texto, None, None)
                     zona_texto = texto
                     incoming_msg = medicamento_pendiente
 
-            # Limpiar contexto previo
             user_context.pop(sender, None)
-            # Continuar con el procesamiento del medicamento
 
         # ---------- VERIFICAR SI EL USUARIO TIENE ZONA ----------
         usuario = get_usuario(sender)
@@ -351,23 +359,20 @@ def whatsapp_webhook():
 
         # ---------- PROCESAR BÚSQUEDA DE MEDICAMENTO ----------
 
-        # Manejo de preguntas de seguimiento (solo si el mensaje parece una respuesta de seguimiento)
+        # Manejo de preguntas de seguimiento
         contexto = user_context.get(sender)
         if contexto:
             pregunta = incoming_msg.lower()
             seguimiento_keywords = ['sí', 'si', 'no', 'genérico', 'generico', 'tarda', 'demora', 'cuánto', 'hay']
             if any(keyword in pregunta for keyword in seguimiento_keywords):
                 respuesta = manejar_pregunta_seguimiento(pregunta, contexto)
-                # Si la función devuelve None, no es una pregunta de seguimiento válida
                 if respuesta:
                     msg = resp.message()
                     msg.body(respuesta)
                     return Response(str(resp), mimetype="application/xml")
                 else:
-                    # No es seguimiento, limpiar contexto y continuar como nueva búsqueda
                     user_context.pop(sender, None)
             else:
-                # No contiene keywords de seguimiento, limpiar contexto y continuar como nueva búsqueda
                 user_context.pop(sender, None)
 
         # Normalizar medicamento
@@ -481,7 +486,6 @@ def whatsapp_webhook():
         # --- GENERAR MAPA ---
         mapa_url = None
         if colonia_para_mapa and ciudad_para_mapa:
-            # Usar colonia + ciudad
             try:
                 logging.info(f"🗺️ Generando mapa para colonia: {colonia_para_mapa}, ciudad: {ciudad_para_mapa}")
                 mapa_url = obtener_mapa_para_zona_sync(zona=colonia_para_mapa, ciudad=ciudad_para_mapa)
@@ -489,7 +493,6 @@ def whatsapp_webhook():
                 logging.error(f"❌ Error al obtener mapa: {e}")
                 mapa_url = None
         elif colonia_para_mapa and not ciudad_para_mapa:
-            # Usar solo colonia (sin ciudad)
             try:
                 logging.info(f"🗺️ Generando mapa para colonia/CP: {colonia_para_mapa}")
                 mapa_url = obtener_mapa_para_zona_sync(zona=colonia_para_mapa)
@@ -497,7 +500,6 @@ def whatsapp_webhook():
                 logging.error(f"❌ Error al obtener mapa: {e}")
                 mapa_url = None
         elif lat_para_mapa is not None and lon_para_mapa is not None:
-            # Usar GPS
             try:
                 logging.info(f"🗺️ Generando mapa para GPS: {lat_para_mapa}, {lon_para_mapa}")
                 mapa_url = obtener_mapa_para_zona_sync(lat=lat_para_mapa, lon=lon_para_mapa)
