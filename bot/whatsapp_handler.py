@@ -324,13 +324,37 @@ def whatsapp_webhook():
                 save_zona_gps(sender, float(lat), float(lon))
                 zona_texto = "tu ubicación GPS"
             else:
+                # 🔥 CAMBIO: Separar colonia y ciudad si hay coma
                 cp = None
                 colonia = incoming_msg
+                ciudad = None
+                
+                # Verificar si es código postal (solo dígitos)
                 if incoming_msg.isdigit() and len(incoming_msg) in [5, 6]:
                     cp = incoming_msg
                     colonia = None
-                save_zona_texto(sender, colonia, cp)
-                zona_texto = colonia if colonia else f"CP {cp}"
+                else:
+                    # Intentar separar por coma: "colonia, ciudad"
+                    partes = incoming_msg.split(',')
+                    if len(partes) > 1:
+                        colonia = partes[0].strip()
+                        ciudad = partes[1].strip()
+                    else:
+                        colonia = incoming_msg
+                        ciudad = None
+                
+                # Guardar con ciudad (si se proporcionó)
+                save_zona_texto(sender, colonia, cp, ciudad)
+                
+                # Construir texto para el pie de página
+                if colonia and ciudad:
+                    zona_texto = f"{colonia}, {ciudad}"
+                elif colonia:
+                    zona_texto = colonia
+                elif cp:
+                    zona_texto = f"CP {cp}"
+                else:
+                    zona_texto = "tu zona"
 
             incoming_msg = medicamento_pendiente
 
@@ -423,25 +447,35 @@ def whatsapp_webhook():
         usuario_actual = get_usuario(sender)
         if usuario_actual:
             if usuario_actual.get('colonia'):
-                zona_texto = usuario_actual['colonia']
-                # Solo generamos mapa si tenemos colonia (no GPS)
-                colonia_para_mapa = usuario_actual['colonia']
+                # 🔥 CAMBIO: Incluir ciudad en zona_texto
+                colonia = usuario_actual['colonia']
+                ciudad = usuario_actual.get('ciudad')
+                if ciudad:
+                    zona_texto = f"{colonia}, {ciudad}"
+                else:
+                    zona_texto = colonia
+                colonia_para_mapa = colonia
+                ciudad_para_mapa = ciudad or "Ciudad de México"  # fallback
             elif usuario_actual.get('latitud') is not None:
                 zona_texto = f"GPS ({usuario_actual['latitud']:.4f}, {usuario_actual['longitud']:.4f})"
                 colonia_para_mapa = None
+                ciudad_para_mapa = None
             else:
                 zona_texto = "tu zona"
                 colonia_para_mapa = None
+                ciudad_para_mapa = None
         else:
             zona_texto = None
             colonia_para_mapa = None
+            ciudad_para_mapa = None
 
-        # --- GENERAR MAPA (si hay colonia) ---
+        # --- GENERAR MAPA (si hay colonia y ciudad) ---
         mapa_url = None
-        if colonia_para_mapa:
+        if colonia_para_mapa and ciudad_para_mapa:
             try:
-                logging.info(f"🗺️ Generando mapa para colonia: {colonia_para_mapa}")
-                mapa_url = obtener_mapa_para_zona_sync(colonia_para_mapa)
+                logging.info(f"🗺️ Generando mapa para colonia: {colonia_para_mapa}, ciudad: {ciudad_para_mapa}")
+                # 🔥 CAMBIO: Pasar la ciudad a la función
+                mapa_url = obtener_mapa_para_zona_sync(colonia_para_mapa, ciudad=ciudad_para_mapa)
                 if mapa_url:
                     logging.info(f"✅ Mapa obtenido: {mapa_url}")
                 else:

@@ -470,19 +470,17 @@ def _save_usuario(whatsapp_number: str, data: Dict[str, Any]):
     conn.commit()
     conn.close()
 
-def save_zona_texto(whatsapp_number: str, colonia: str, cp: Optional[str] = None):
-    """
-    Guarda o actualiza la zona del usuario a partir de texto (colonia y código postal opcional).
-    """
+def save_zona_texto(whatsapp_number: str, colonia: str, cp: Optional[str] = None, ciudad: Optional[str] = None):
     data = {
-        'colonia': colonia.strip(),
+        'colonia': colonia.strip() if colonia else None,
         'codigo_postal': cp.strip() if cp else None,
+        'ciudad': ciudad.strip() if ciudad else 'Ciudad de México',
         'zona_verificada': True,
         'ultima_busqueda': datetime.now(timezone.utc).isoformat()
     }
     _save_usuario(whatsapp_number, data)
-    logger.info(f"✅ Zona guardada para {whatsapp_number}: colonia='{colonia}', CP='{cp}'")
-
+    logger.info(f"✅ Zona guardada para {whatsapp_number}: colonia='{colonia}', CP='{cp}', ciudad='{ciudad}'")
+    
 def save_zona_gps(whatsapp_number: str, lat: float, lon: float):
     """
     Guarda o actualiza la zona del usuario a partir de coordenadas GPS.
