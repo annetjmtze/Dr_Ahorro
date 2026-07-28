@@ -146,7 +146,8 @@ def manejar_pregunta_seguimiento(pregunta: str, contexto: dict) -> str:
     elif 'tarda' in pregunta or 'cuánto' in pregunta:
         return "Normalmente actualizamos los precios en 24-48 horas. Te notificaremos en cuanto tengamos novedades. ¿Quieres que te avise?"
     else:
-        return "No entendí tu pregunta. Por favor, reformúlala o escríbeme 'sí' para que te avise, 'no' para cancelar, o pregunta por genéricos."
+        # Si no es ninguna de las anteriores, no es una pregunta de seguimiento válida
+        return None
 
 def limpiar_contexto_expirado():
     ahora = datetime.now(timezone.utc)
@@ -250,7 +251,7 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, z
     return "\n".join(lines)
 
 # ------------------------------------------------------------
-#  WEBHOOK PRINCIPAL (SIMPLIFICADO)
+#  WEBHOOK PRINCIPAL (CORREGIDO)
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():
@@ -279,15 +280,19 @@ def whatsapp_webhook():
         # ---------- COMANDO /zona ----------
         if incoming_msg.lower() == "/zona":
             clear_zona(sender)
+            # Limpiar contexto y pending
+            user_context.pop(sender, None)
+            pending_zone.pop(sender, None)
             msg = resp.message()
             msg.body("📍 Para actualizar tu zona, escribe tu colonia y ciudad (ej. 'Del Valle, CDMX') o tu código postal (5 dígitos).\n"
                      "También puedes tocar el clip 📎 y compartir tu ubicación.")
-            pending_zone.pop(sender, None)
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- GPS SIN MEDICAMENTO ----------
+        # ---------- GPS (si se comparte ubicación) ----------
         if is_gps and sender not in pending_zone:
             save_zona_gps(sender, float(lat), float(lon))
+            # Limpiar contexto previo para evitar interferencia
+            user_context.pop(sender, None)
             msg = resp.message()
             msg.body("✅ Ubicación GPS guardada. Ahora escribe el nombre de un medicamento para buscar precios.")
             return Response(str(resp), mimetype="application/xml")
@@ -318,14 +323,14 @@ def whatsapp_webhook():
                     zona_texto = f"{colonia}, {ciudad}"
                     incoming_msg = medicamento_pendiente
                 else:
-                    # Solo colonia (sin ciudad) -> guardar y asumir que la ciudad se pedirá después? 
-                    # Para simplificar, guardamos con ciudad None y luego en el mapa se usará solo colonia.
+                    # Solo colonia (sin ciudad) -> guardar con ciudad None
                     save_zona_texto(sender, texto, None, None)
                     zona_texto = texto
                     incoming_msg = medicamento_pendiente
 
-            # Si el usuario ya tenía zona pero no se guardó (por error), no debería pasar
-            # Ahora continuamos con el procesamiento del medicamento
+            # Limpiar contexto previo
+            user_context.pop(sender, None)
+            # Continuar con el procesamiento del medicamento
 
         # ---------- VERIFICAR SI EL USUARIO TIENE ZONA ----------
         usuario = get_usuario(sender)
@@ -346,16 +351,24 @@ def whatsapp_webhook():
 
         # ---------- PROCESAR BÚSQUEDA DE MEDICAMENTO ----------
 
-        # Manejo de preguntas de seguimiento
+        # Manejo de preguntas de seguimiento (solo si el mensaje parece una respuesta de seguimiento)
         contexto = user_context.get(sender)
         if contexto:
             pregunta = incoming_msg.lower()
             seguimiento_keywords = ['sí', 'si', 'no', 'genérico', 'generico', 'tarda', 'demora', 'cuánto', 'hay']
             if any(keyword in pregunta for keyword in seguimiento_keywords):
                 respuesta = manejar_pregunta_seguimiento(pregunta, contexto)
-                msg = resp.message()
-                msg.body(respuesta)
-                return Response(str(resp), mimetype="application/xml")
+                # Si la función devuelve None, no es una pregunta de seguimiento válida
+                if respuesta:
+                    msg = resp.message()
+                    msg.body(respuesta)
+                    return Response(str(resp), mimetype="application/xml")
+                else:
+                    # No es seguimiento, limpiar contexto y continuar como nueva búsqueda
+                    user_context.pop(sender, None)
+            else:
+                # No contiene keywords de seguimiento, limpiar contexto y continuar como nueva búsqueda
+                user_context.pop(sender, None)
 
         # Normalizar medicamento
         resultado = normalizer.normalizar(incoming_msg)
