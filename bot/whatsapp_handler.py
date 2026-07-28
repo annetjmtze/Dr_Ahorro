@@ -46,20 +46,17 @@ logging.basicConfig(level=logging.INFO)
 user_context = {}
 CONTEXTO_EXPIRACION = timedelta(minutes=30)
 
-# --- Nuevo: usuarios que están esperando responder su zona ---
-pending_zone = {}
+# --- Diccionarios para onboarding ---
+pending_zone = {}         # medicamento pendiente
+pending_colonia = {}      # colonia/cp pendiente (cuando falta ciudad)
 
 # ------------------------------------------------------------
-#  FUNCIONES AUXILIARES (sin cambios)
+#  FUNCIONES AUXILIARES
 # ------------------------------------------------------------
 
 def obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresado):
-    """
-    Devuelve el principio activo más adecuado para la búsqueda.
-    """
     if resultado.get('principio_activo'):
         return resultado['principio_activo']
-    
     nombre_lower = nombre_ingresado.lower()
     if 'clavulánico' in nombre_lower or 'clavulanico' in nombre_lower:
         return 'amoxicilina'
@@ -69,7 +66,6 @@ def obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresa
         return 'ibuprofeno'
     if 'paracetamol' in nombre_lower:
         return 'paracetamol'
-    
     return nombre_generico
 
 def get_alternativas(principio_activo: str, limit: int = 5):
@@ -178,7 +174,7 @@ def limpiar_contexto_expirado():
         del user_context[k]
 
 # ------------------------------------------------------------
-#  FUNCIÓN DE FORMATEO (MEJORADA CON ZONA)
+#  FUNCIÓN DE FORMATEO
 # ------------------------------------------------------------
 def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, zona_texto: str = None) -> str:
     lines = []
@@ -272,13 +268,12 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, z
     return "\n".join(lines)
 
 # ------------------------------------------------------------
-#  WEBHOOK PRINCIPAL (CON ONBOARDING Y MAPA)
+#  WEBHOOK PRINCIPAL
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():
     resp = MessagingResponse()
     try:
-        # Obtener datos del request
         incoming_msg = request.form.get("Body", "").strip()
         sender = request.form.get("From", "desconocido")
         lat = request.form.get("Latitude")
@@ -289,11 +284,9 @@ def whatsapp_webhook():
 
         limpiar_contexto_expirado()
 
-        # Verificar límite diario
         if is_limit_reached():
             msg = resp.message()
             msg.body("Alcanzamos el límite de consultas por hoy. Vuelve mañana.")
-            logging.warning(f"Límite diario alcanzado, rechazando mensaje de {sender}")
             return Response(str(resp), mimetype="application/xml")
 
         if not incoming_msg and not is_gps:
@@ -301,76 +294,87 @@ def whatsapp_webhook():
             msg.body("Por favor, envía el nombre de un medicamento.")
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- Manejo de comando /zona ----------
+        # ---------- MANEJO DE COMANDO /zona ----------
         if incoming_msg.lower() == "/zona":
             clear_zona(sender)
             msg = resp.message()
             msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas? Escribe tu colonia o código postal, o toca el clip 📎 y comparte tu ubicación.")
             pending_zone.pop(sender, None)
+            pending_colonia.pop(sender, None)
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- Manejo de GPS cuando NO está en pending_zone ----------
+        # ---------- MANEJO DE GPS ----------
         if is_gps and sender not in pending_zone:
             save_zona_gps(sender, float(lat), float(lon))
             msg = resp.message()
             msg.body("✅ Ubicación GPS guardada. Ahora puedes buscar medicamentos y te mostraré precios en tu zona.")
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- Verificar si el usuario está en pending_zone ----------
-        if sender in pending_zone:
+        # ---------- SI EL USUARIO ESTÁ ESPERANDO LA CIUDAD ----------
+        if sender in pending_colonia:
+            # La respuesta es la ciudad
+            ciudad = incoming_msg
+            colonia_info = pending_colonia.pop(sender)
+            medicamento_pendiente = pending_zone.pop(sender, None)
+
+            # Guardar con colonia y ciudad
+            if colonia_info['tipo'] == 'colonia':
+                save_zona_texto(sender, colonia_info['valor'], None, ciudad)
+                zona_texto = f"{colonia_info['valor']}, {ciudad}"
+            else:  # CP
+                save_zona_texto(sender, None, colonia_info['valor'], ciudad)
+                zona_texto = f"CP {colonia_info['valor']}, {ciudad}"
+
+            incoming_msg = medicamento_pendiente
+            # Continuar con la búsqueda
+
+        # ---------- SI EL USUARIO ESTÁ EN pending_zone (respondiendo colonia/CP) ----------
+        elif sender in pending_zone:
             medicamento_pendiente = pending_zone.pop(sender)
 
             if is_gps:
                 save_zona_gps(sender, float(lat), float(lon))
                 zona_texto = "tu ubicación GPS"
+                incoming_msg = medicamento_pendiente
             else:
-                # 🔥 CAMBIO: Separar colonia y ciudad si hay coma
-                cp = None
-                colonia = incoming_msg
-                ciudad = None
-                
-                # Verificar si es código postal (solo dígitos)
-                if incoming_msg.isdigit() and len(incoming_msg) in [5, 6]:
-                    cp = incoming_msg
-                    colonia = None
-                else:
-                    # Intentar separar por coma: "colonia, ciudad"
-                    partes = incoming_msg.split(',')
-                    if len(partes) > 1:
-                        colonia = partes[0].strip()
-                        ciudad = partes[1].strip()
-                    else:
-                        colonia = incoming_msg
-                        ciudad = None
-                
-                # Guardar con ciudad (si se proporcionó)
-                save_zona_texto(sender, colonia, cp, ciudad)
-                
-                # Construir texto para el pie de página
-                if colonia and ciudad:
+                # Intentar extraer colonia y ciudad (formato: "colonia, ciudad")
+                partes = incoming_msg.split(',')
+                if len(partes) > 1:
+                    colonia = partes[0].strip()
+                    ciudad = partes[1].strip()
+                    # Guardar directamente
+                    save_zona_texto(sender, colonia, None, ciudad)
                     zona_texto = f"{colonia}, {ciudad}"
-                elif colonia:
-                    zona_texto = colonia
-                elif cp:
-                    zona_texto = f"CP {cp}"
+                    incoming_msg = medicamento_pendiente
                 else:
-                    zona_texto = "tu zona"
+                    # Solo colonia o CP -> guardar temporal y preguntar ciudad
+                    if incoming_msg.isdigit() and len(incoming_msg) in [5, 6]:
+                        # Es CP
+                        pending_colonia[sender] = {'tipo': 'cp', 'valor': incoming_msg}
+                        msg = resp.message()
+                        msg.body("📍 ¿En qué ciudad se encuentra este código postal? (ej. Uruapan, Morelia)")
+                        return Response(str(resp), mimetype="application/xml")
+                    else:
+                        # Es colonia
+                        pending_colonia[sender] = {'tipo': 'colonia', 'valor': incoming_msg}
+                        msg = resp.message()
+                        msg.body("📍 ¿En qué ciudad se encuentra esta colonia? (ej. Uruapan, Morelia)")
+                        return Response(str(resp), mimetype="application/xml")
 
-            incoming_msg = medicamento_pendiente
-
-        # ---------- A partir de aquí, el usuario tiene zona ----------
+        # ---------- A PARTIR DE AQUÍ EL USUARIO TIENE ZONA GUARDADA ----------
         usuario = get_usuario(sender)
         tiene_zona = usuario and (usuario.get('colonia') is not None or usuario.get('latitud') is not None)
 
+        # Si no tiene zona, preguntar
         if not tiene_zona and sender not in pending_zone:
             pending_zone[sender] = incoming_msg
             msg = resp.message()
             msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas? Escribe tu colonia o código postal, o toca el clip 📎 y comparte tu ubicación.")
             return Response(str(resp), mimetype="application/xml")
 
-        # --- Procesar búsqueda de medicamento ---
+        # --- PROCESAR BÚSQUEDA DE MEDICAMENTO ---
 
-        # Manejo de preguntas de seguimiento (contexto)
+        # Manejo de preguntas de seguimiento
         contexto = user_context.get(sender)
         if contexto:
             pregunta = incoming_msg.lower()
@@ -443,19 +447,15 @@ def whatsapp_webhook():
         farmacias.sort(key=lambda x: x['precio'])
         delivery.sort(key=lambda x: x['precio'])
 
-        # --- Obtener zona del usuario para el pie de página y mapa ---
+        # --- OBTENER ZONA DEL USUARIO (COLONIA + CIUDAD) ---
         usuario_actual = get_usuario(sender)
         if usuario_actual:
             if usuario_actual.get('colonia'):
-                # 🔥 CAMBIO: Incluir ciudad en zona_texto
                 colonia = usuario_actual['colonia']
-                ciudad = usuario_actual.get('ciudad')
-                if ciudad:
-                    zona_texto = f"{colonia}, {ciudad}"
-                else:
-                    zona_texto = colonia
+                ciudad = usuario_actual.get('ciudad') or "Ciudad de México"
+                zona_texto = f"{colonia}, {ciudad}"
                 colonia_para_mapa = colonia
-                ciudad_para_mapa = ciudad or "Ciudad de México"  # fallback
+                ciudad_para_mapa = ciudad
             elif usuario_actual.get('latitud') is not None:
                 zona_texto = f"GPS ({usuario_actual['latitud']:.4f}, {usuario_actual['longitud']:.4f})"
                 colonia_para_mapa = None
@@ -469,12 +469,11 @@ def whatsapp_webhook():
             colonia_para_mapa = None
             ciudad_para_mapa = None
 
-        # --- GENERAR MAPA (si hay colonia y ciudad) ---
+        # --- GENERAR MAPA ---
         mapa_url = None
         if colonia_para_mapa and ciudad_para_mapa:
             try:
                 logging.info(f"🗺️ Generando mapa para colonia: {colonia_para_mapa}, ciudad: {ciudad_para_mapa}")
-                # 🔥 CAMBIO: Pasar la ciudad a la función
                 mapa_url = obtener_mapa_para_zona_sync(colonia_para_mapa, ciudad=ciudad_para_mapa)
                 if mapa_url:
                     logging.info(f"✅ Mapa obtenido: {mapa_url}")
@@ -484,10 +483,9 @@ def whatsapp_webhook():
                 logging.error(f"❌ Error al obtener mapa: {e}")
                 mapa_url = None
 
-        # --- Construir respuesta de texto ---
+        # --- CONSTRUIR RESPUESTA DE TEXTO ---
         if farmacias or delivery:
             texto_respuesta = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
-            # Guardar contexto
             user_context[sender] = {
                 'medicamento_buscado': nombre_ingresado,
                 'nombre_generico': nombre_generico,
@@ -520,18 +518,15 @@ def whatsapp_webhook():
                 'timestamp': datetime.now(timezone.utc)
             }
 
-        # --- ENVIAR RESPUESTA POR WHATSAPP (imagen + texto) ---
-        # Si tenemos mapa_url, enviamos primero la imagen
+        # --- ENVIAR RESPUESTA (IMAGEN + TEXTO) ---
         if mapa_url:
             msg_mapa = resp.message()
             msg_mapa.media(mapa_url)
             logging.info(f"🖼️ Enviando imagen del mapa a {sender}")
 
-        # Luego el texto
         msg_texto = resp.message()
         msg_texto.body(texto_respuesta)
 
-        # Notificar límite si aplica
         if increment_and_check_limit():
             mensaje_limite = (
                 f"⚠️ *Dr. Ahorro* — Límite diario al 80%\n"
