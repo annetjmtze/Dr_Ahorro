@@ -2,6 +2,7 @@ import os
 import asyncio
 import random
 import hashlib
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 import logging
@@ -34,6 +35,9 @@ if R2_PUBLIC_URL:
 else:
     logger.warning("⚠️ R2_PUBLIC_URL no está definida")
 
+# ============================================================
+# CLIENTE R2
+# ============================================================
 def get_r2_client():
     if not R2_ACCESS_KEY:
         raise ValueError("❌ R2_ACCESS_KEY no está configurada")
@@ -49,16 +53,29 @@ def get_r2_client():
         region_name='auto'
     )
 
+# ============================================================
+# GENERACIÓN DE CLAVE PARA CACHÉ
+# ============================================================
 def generar_key_para_busqueda(zona: str = "", ciudad: str = "", lat: float = None, lon: float = None) -> str:
-    """Genera una clave única para la búsqueda (puede ser colonia+ciudad o coordenadas)."""
+    """
+    Genera una clave única para la búsqueda (puede ser colonia+ciudad o coordenadas).
+    """
     if lat is not None and lon is not None:
         base = f"gps_{lat:.6f}_{lon:.6f}"
-    else:
+    elif zona and ciudad:
         base = f"{zona}_{ciudad}".lower().strip()
+    elif zona:
+        base = f"{zona}".lower().strip()
+    else:
+        base = "unknown"
+    
     base_limpia = base.replace(' ', '_').replace(',', '').replace('.', '')
     hash_obj = hashlib.md5(base.encode('utf-8')).hexdigest()[:8]
     return f"mapas/{base_limpia}_{hash_obj}.png"
 
+# ============================================================
+# FUNCIONES DE CACHÉ
+# ============================================================
 def obtener_imagen_cacheada(zona: str = "", ciudad: str = "", lat: float = None, lon: float = None) -> Optional[Tuple[str, datetime]]:
     try:
         client = get_r2_client()
@@ -107,25 +124,35 @@ def guardar_imagen_en_r2(zona: str = "", ciudad: str = "", lat: float = None, lo
         logger.error(f"❌ Error al guardar imagen: {e}")
         raise
 
+# ============================================================
+# CAPTURA DE MAPA CON PLAYWRIGHT
+# ============================================================
 async def capturar_mapa_farmacias(
     zona: str = None,
     ciudad: str = None,
     lat: float = None,
     lon: float = None
 ) -> Optional[bytes]:
+    """
+    Abre Google Maps con Playwright, espera a que carguen los pines y captura el mapa.
+    Retorna los bytes de la imagen o None si falla.
+    """
     try:
-        # Construir la URL de búsqueda
+        # Construir la URL de búsqueda correctamente codificada
         if lat is not None and lon is not None:
-            query = f"farmacias cerca de {lat},{lon}"
+            # 🔥 CORREGIDO: usar coordenadas con formato correcto y añadir México
+            query = f"farmacias cerca de {lat},{lon} México"
         elif zona and ciudad:
-            query = f"farmacias cerca de {zona}, {ciudad}"
+            query = f"farmacias cerca de {zona}, {ciudad} México"
         elif zona:
-            query = f"farmacias cerca de {zona}"
+            # Si solo tenemos zona (puede ser colonia o CP), añadimos México
+            query = f"farmacias cerca de {zona} México"
         else:
-            logger.error("❌ No hay suficiente información para generar el mapa (falta zona/ciudad o GPS)")
+            logger.error("❌ No hay suficiente información para generar el mapa")
             return None
 
-        url = f"https://www.google.com/maps/search/{query}"
+        # Codificar la URL correctamente
+        url = f"https://www.google.com/maps/search/{urllib.parse.quote(query)}"
         logger.info(f"🗺️ Abriendo Google Maps: {url}")
 
         async with async_playwright() as p:
@@ -138,11 +165,13 @@ async def capturar_mapa_farmacias(
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
             try:
+                # Esperar a que cargue el mapa
                 await page.wait_for_selector('[role="main"]', timeout=15000)
                 await asyncio.sleep(random.uniform(3, 5))
             except Exception as e:
-                logger.warning(f"⚠️ No se pudo detectar el mapa: {e}")
+                logger.warning(f"⚠️ No se pudo detectar el mapa correctamente: {e}")
 
+            # Capturar solo la parte derecha (mapa)
             screenshot = await page.screenshot(
                 clip={"x": 350, "y": 0, "width": 450, "height": 600},
                 type='png'
@@ -153,12 +182,20 @@ async def capturar_mapa_farmacias(
         logger.error(f"❌ Error en capturar_mapa_farmacias: {e}")
         return None
 
+# ============================================================
+# FUNCIÓN PRINCIPAL ASÍNCRONA
+# ============================================================
 async def obtener_mapa_para_zona(
     zona: str = None,
     ciudad: str = None,
     lat: float = None,
     lon: float = None
 ) -> Optional[str]:
+    """
+    Función principal: retorna la URL pública de la imagen del mapa.
+    Si está en caché y es reciente, la devuelve; si no, la genera y guarda.
+    Retorna None si falla.
+    """
     # Verificar caché
     cached = obtener_imagen_cacheada(zona, ciudad, lat, lon)
     if cached:
@@ -166,6 +203,7 @@ async def obtener_mapa_para_zona(
         logger.info(f"♻️ Usando caché para {zona} {ciudad} {lat} {lon} (generado: {fecha})")
         return url
 
+    # Si no está en caché, generar nuevo
     logger.info(f"🆕 Generando nuevo mapa para {zona} {ciudad} {lat} {lon}")
     imagen_bytes = await capturar_mapa_farmacias(zona, ciudad, lat, lon)
     if imagen_bytes is None:
@@ -178,12 +216,16 @@ async def obtener_mapa_para_zona(
         logger.error(f"❌ No se pudo guardar la imagen: {e}")
         return None
 
+# ============================================================
+# VERSIÓN SÍNCRONA PARA FLASK
+# ============================================================
 def obtener_mapa_para_zona_sync(
     zona: str = None,
     ciudad: str = None,
     lat: float = None,
     lon: float = None
 ) -> Optional[str]:
+    """Versión síncrona de obtener_mapa_para_zona."""
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -192,7 +234,14 @@ def obtener_mapa_para_zona_sync(
         logger.error(f"Error en obtener_mapa_para_zona_sync: {e}")
         return None
 
+# ============================================================
+# LIMPIEZA DE CACHÉ (OPCIONAL)
+# ============================================================
 def limpiar_cache_expirado():
+    """
+    Elimina objetos en R2 que tengan más de 6 horas.
+    Se podría llamar periódicamente con un cron job.
+    """
     try:
         client = get_r2_client()
     except ValueError as e:
