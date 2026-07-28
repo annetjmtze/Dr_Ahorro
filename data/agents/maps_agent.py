@@ -13,12 +13,12 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# CONFIGURACIÓN DE R2 DESDE ENTORNO
+# CONFIGURACIÓN DE R2 DESDE ENTORNO (nombres de Railway)
 # ============================================================
-R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY")
-R2_SECRET_KEY = os.getenv("R2_SECRET_KEY")
-R2_ENDPOINT = os.getenv("R2_ENDPOINT")
-R2_BUCKET = os.getenv("R2_BUCKET", "dr-ahorro-screenshots")
+R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY_ID")          # <- cambiado
+R2_SECRET_KEY = os.getenv("R2_SECRET_ACCESS_KEY")      # <- cambiado
+R2_ENDPOINT = os.getenv("R2_ENDPOINT_URL")             # <- cambiado
+R2_BUCKET = os.getenv("R2_BUCKET_NAME")                # <- cambiado
 R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL")
 
 CACHE_EXPIRATION_HOURS = 6
@@ -123,6 +123,7 @@ def guardar_imagen_en_r2(zona: str, imagen_bytes: bytes) -> str:
 # ============================================================
 # CAPTURA DE MAPA CON PLAYWRIGHT
 # ============================================================
+async def capturar_mapa_farmacias(zona: str) -> Optional[bytes]:
     """
     Abre Google Maps con Playwright, espera a que carguen los pines y captura el mapa.
     Retorna los bytes de la imagen o None si falla.
@@ -138,15 +139,21 @@ def guardar_imagen_en_r2(zona: str, imagen_bytes: bytes) -> str:
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
             )
             page = await context.new_page()
-            await page.goto(url, wait_until="networkidle")
-
+            
+            # Timeout más largo y wait_until diferente
+            await page.goto(
+                url, 
+                wait_until="domcontentloaded",
+                timeout=60000  # 60 segundos
+            )
+            
             try:
-                # Esperar a que el mapa esté listo
-                await page.wait_for_selector('[role="main"]', timeout=10000)
+                # Esperar a que aparezca el contenedor del mapa
+                await page.wait_for_selector('[role="main"]', timeout=15000)
                 await asyncio.sleep(random.uniform(3, 5))
             except Exception as e:
                 logger.warning(f"⚠️ No se pudo detectar el mapa correctamente: {e}")
-
+            
             # Capturar solo la parte derecha (mapa)
             screenshot = await page.screenshot(
                 clip={"x": 350, "y": 0, "width": 450, "height": 600},
@@ -157,45 +164,7 @@ def guardar_imagen_en_r2(zona: str, imagen_bytes: bytes) -> str:
     except Exception as e:
         logger.error(f"❌ Error en capturar_mapa_farmacias: {e}")
         return None
-async def capturar_mapa_farmacias(zona: str) -> Optional[bytes]:
-    try:
-        query = f"farmacias cerca de {zona} México"
-        url = f"https://www.google.com/maps/search/{query}"
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                viewport={"width": 800, "height": 600},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
-            
-            # --- CAMBIO 1: Timeout más largo y wait_until diferente ---
-            await page.goto(
-                url, 
-                wait_until="domcontentloaded",  # No esperar a que todo esté "networkidle"
-                timeout=60000  # 60 segundos en lugar de 30
-            )
-            
-            # --- CAMBIO 2: Esperar específicamente al mapa, no a networkidle ---
-            try:
-                # Esperar a que aparezca el contenedor del mapa
-                await page.wait_for_selector('[role="main"]', timeout=15000)
-                # Espera adicional para que carguen los pines
-                await asyncio.sleep(random.uniform(3, 5))
-            except Exception as e:
-                logger.warning(f"⚠️ No se pudo detectar el mapa correctamente: {e}")
-            
-            # Capturar el mapa
-            screenshot = await page.screenshot(
-                clip={"x": 350, "y": 0, "width": 450, "height": 600},
-                type='png'
-            )
-            await browser.close()
-            return screenshot
-    except Exception as e:
-        logger.error(f"❌ Error en capturar_mapa_farmacias: {e}")
-        return None
 # ============================================================
 # FUNCIÓN PRINCIPAL (VERSIÓN ASÍNCRONA)
 # ============================================================
@@ -205,14 +174,12 @@ async def obtener_mapa_para_zona(zona: str) -> Optional[str]:
     Si está en caché y es reciente, la devuelve; si no, la genera y guarda.
     Retorna None si falla.
     """
-    # Verificar caché
     cached = obtener_imagen_cacheada(zona)
     if cached:
         url, fecha = cached
         logger.info(f"♻️ Usando caché para {zona} (generado: {fecha})")
         return url
 
-    # Si no está en caché o expiró, generar nuevo
     logger.info(f"🆕 Generando nuevo mapa para {zona}")
     imagen_bytes = await capturar_mapa_farmacias(zona)
     if imagen_bytes is None:
