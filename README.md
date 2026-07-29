@@ -29,6 +29,10 @@
 - ✅ **Arquitectura de Producción**: Desplegado en **Railway** con base de datos **PostgreSQL** y tareas programadas.
 - ✅ **Recolección Automatizada**: Un **scheduler (`APScheduler`)** ejecuta agentes de scraping de forma periódica para mantener los precios actualizados.
 - ✅ **Agentes de Scraping Avanzados**:
+   - **Agente de Mapas**: Genera una imagen de Google Maps con las farmacias cercanas a la zona del usuario y la almacena en caché en R2.
+- ✅ **Motor de Recomendación (Costo-Beneficio)**: Analiza precios, conveniencia y urgencia para sugerir la mejor opción de compra, no solo la más barata.
+- ✅ **Onboarding de Ubicación**: La primera vez que un usuario interactúa, el bot solicita su zona (colonia, CP o GPS) para ofrecer resultados personalizados.
+- ✅ **Visualización de Farmacias Cercanas**: Envía una imagen de un mapa con pines de las farmacias en la zona del usuario antes de la lista de precios.
   - **Agente Playwright**: Extrae precios de farmacias con sitios web dinámicos (JavaScript).
   - **Agentes de Delivery**: Consulta precios en **Rappi** y **Uber Eats**.
   - **Scrapers Legacy**: Soporte para sitios estáticos con `requests` y `BeautifulSoup`.
@@ -76,13 +80,17 @@ El sistema se divide en dos servicios principales que corren de forma independie
 
 ```mermaid
 graph TD
-    subgraph "Servicio Web (main.py)"
+    subgraph "Servicio Web (main.py - Respuesta en tiempo real)"
         Usuario -- "Consulta medicamento" --> Canales[WhatsApp / Telegram]
         Canales --> Webhook[Webhook Flask]
         Webhook --> LLM[LLM: Normalizador Claude]
-        LLM --> DB[(Base de Datos<br>PostgreSQL)]
-        DB -- "Precios encontrados" --> Webhook
-        Webhook -- "Respuesta con precios" --> Usuario
+        LLM -- "Nombre y urgencia" --> Webhook
+        Webhook -- "Consulta precios" --> DB[(Base de Datos<br>PostgreSQL)]
+        Webhook -- "Genera mapa" --> MapsAgent[Agente de Mapas]
+        MapsAgent -- "Guarda/lee caché" --> R2[(Cloudflare R2)]
+        Webhook -- "Precios, mapa, urgencia" --> Recomendador[Motor Costo-Beneficio]
+        Recomendador -- "Opción óptima" --> Webhook
+        Webhook -- "Respuesta con mapa y recomendación" --> Usuario
     end
 
     subgraph "Servicio de Tareas (scheduler.py)"
