@@ -2,96 +2,185 @@ import os
 import sys
 import logging
 import requests
-from datetime import datetime
+from datetime import datetime, date
 
 # Asegurar path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from data.database import get_connection
+from data.database import get_connection, IS_PROD
 from dotenv import load_dotenv
 load_dotenv()
 
 # Variables de entorno
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # 8801980649
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Ej: 8801980649
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def generar_reporte():
-    """Genera el reporte diario y lo envía por Telegram."""
+    """Genera el reporte diario y lo envía por Telegram (o lo imprime en consola)."""
     conn = get_connection()
     cursor = conn.cursor()
     try:
-        # Detectar si es SQLite o PostgreSQL
-        es_sqlite = 'sqlite' in str(conn)
-        if es_sqlite:
-            date_func = "DATE(timestamp)"
-            round_func = "ROUND(AVG(ahorro_vs_delivery), 2)"
-        else:
-            date_func = "DATE(timestamp)"
-            round_func = "ROUND(AVG(ahorro_vs_delivery)::numeric, 2)"
+        hoy = date.today().isoformat()
 
         # 1. Medicamentos más buscados hoy
-        cursor.execute(f"""
-            SELECT medicamento, COUNT(*) busquedas
-            FROM analisis_busquedas
-            WHERE {date_func} = CURRENT_DATE
-            GROUP BY medicamento
-            ORDER BY busquedas DESC
-            LIMIT 5;
-        """)
+        if IS_PROD:
+            cursor.execute("""
+                SELECT medicamento, COUNT(*) busquedas
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = %s
+                GROUP BY medicamento
+                ORDER BY busquedas DESC
+                LIMIT 5
+            """, (hoy,))
+        else:
+            cursor.execute("""
+                SELECT medicamento, COUNT(*) busquedas
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = ?
+                GROUP BY medicamento
+                ORDER BY busquedas DESC
+                LIMIT 5
+            """, (hoy,))
         top_meds = cursor.fetchall()
 
         # 2. Ahorro promedio
-        cursor.execute(f"""
-            SELECT {round_func}
-            FROM analisis_busquedas
-            WHERE {date_func} = CURRENT_DATE
-              AND ahorro_vs_delivery IS NOT NULL;
-        """)
-        ahorro_avg = cursor.fetchone()[0]
+        if IS_PROD:
+            cursor.execute("""
+                SELECT ROUND(AVG(ahorro_calculado)::numeric, 2)
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = %s AND ahorro_calculado IS NOT NULL
+            """, (hoy,))
+        else:
+            cursor.execute("""
+                SELECT ROUND(AVG(ahorro_calculado), 2)
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = ? AND ahorro_calculado IS NOT NULL
+            """, (hoy,))
+        ahorro_row = cursor.fetchone()
+        ahorro_avg = ahorro_row[0] if ahorro_row else None
 
         # 3. Usuarios activos
-        cursor.execute(f"""
-            SELECT COUNT(DISTINCT usuario)
-            FROM analisis_busquedas
-            WHERE {date_func} = CURRENT_DATE;
-        """)
-        usuarios_activos = cursor.fetchone()[0]
+        if IS_PROD:
+            cursor.execute("""
+                SELECT COUNT(DISTINCT usuario)
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = %s
+            """, (hoy,))
+        else:
+            cursor.execute("""
+                SELECT COUNT(DISTINCT usuario)
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = ?
+            """, (hoy,))
+        usuarios_activos = cursor.fetchone()[0] or 0
 
         # 4. Consultas urgentes
-        cursor.execute(f"""
-            SELECT COUNT(*)
-            FROM analisis_busquedas
-            WHERE {date_func} = CURRENT_DATE
-              AND urgente = 1;
-        """)
-        consultas_urgentes = cursor.fetchone()[0]
-
-        # Construir mensaje
-        if not top_meds and ahorro_avg is None and usuarios_activos == 0:
-            mensaje = "📊 Sin actividad hoy"
+        if IS_PROD:
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = %s AND urgente = TRUE
+            """, (hoy,))
         else:
-            lines = [f"📊 *Reporte diario - {datetime.now().strftime('%d/%m/%Y')}*", ""]
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = ? AND urgente = 1
+            """, (hoy,))
+        consultas_urgentes = cursor.fetchone()[0] or 0
+
+        # 5. Diferencia Rappi vs Física (por medicamento)
+        if IS_PROD:
+            cursor.execute("""
+                SELECT medicamento,
+                       ROUND(AVG(precio_rappi - precio_fisica)::numeric, 2) diferencia
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = %s
+                  AND precio_rappi IS NOT NULL
+                  AND precio_fisica IS NOT NULL
+                GROUP BY medicamento
+                ORDER BY diferencia DESC
+                LIMIT 5
+            """, (hoy,))
+        else:
+            cursor.execute("""
+                SELECT medicamento,
+                       ROUND(AVG(precio_rappi - precio_fisica), 2) diferencia
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = ?
+                  AND precio_rappi IS NOT NULL
+                  AND precio_fisica IS NOT NULL
+                GROUP BY medicamento
+                ORDER BY diferencia DESC
+                LIMIT 5
+            """, (hoy,))
+        diff_meds = cursor.fetchall()
+
+        # 6. Zona más activa
+        if IS_PROD:
+            cursor.execute("""
+                SELECT zona, COUNT(*) consultas
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = %s AND zona IS NOT NULL
+                GROUP BY zona
+                ORDER BY consultas DESC
+                LIMIT 1
+            """, (hoy,))
+        else:
+            cursor.execute("""
+                SELECT zona, COUNT(*) consultas
+                FROM analisis_busquedas
+                WHERE DATE(fecha) = ? AND zona IS NOT NULL
+                GROUP BY zona
+                ORDER BY consultas DESC
+                LIMIT 1
+            """, (hoy,))
+        zona_row = cursor.fetchone()
+
+        # --- Construir mensaje ---
+        if not top_meds and ahorro_avg is None and usuarios_activos == 0:
+            mensaje = f"📊 *Reporte Diario - {date.today().strftime('%d/%m/%Y')}*\n\nSin actividad hoy."
+        else:
+            lines = [f"📊 *Reporte Diario - {date.today().strftime('%d/%m/%Y')}*", ""]
+            
             if top_meds:
-                lines.append("🏥 *Medicamentos más buscados:*")
+                lines.append("💊 *Medicamentos más buscados:*")
                 for med, count in top_meds:
                     lines.append(f"  • {med}: {count} búsquedas")
                 lines.append("")
+            
             if ahorro_avg is not None:
                 lines.append(f"💰 *Ahorro promedio por consulta:* ${ahorro_avg:.2f}")
                 lines.append("")
-            if usuarios_activos:
-                lines.append(f"👥 *Usuarios activos:* {usuarios_activos}")
-                lines.append("")
+            
+            lines.append(f"👥 *Usuarios activos:* {usuarios_activos}")
+            lines.append("")
+            
             if consultas_urgentes:
-                lines.append(f"⚡ *Consultas urgentes:* {consultas_urgentes}")
+                lines.append(f"🚨 *Consultas urgentes:* {consultas_urgentes}")
                 lines.append("")
-            lines.append("📌 *Nota:* Los datos de zona y diferencia Rappi vs física aún no se registran.")
+            
+            if diff_meds:
+                lines.append("📈 *Diferencia Rappi vs Física (más caro):*")
+                for med, diff in diff_meds:
+                    lines.append(f"  • {med}: +${diff:.2f}")
+                lines.append("")
+            else:
+                lines.append("📈 *Diferencia Rappi vs Física:* Sin datos suficientes.")
+                lines.append("")
+            
+            if zona_row:
+                zona, consultas = zona_row
+                lines.append(f"📍 *Zona más activa:* {zona} ({consultas} consultas)")
+            else:
+                lines.append("📍 *Zona más activa:* Sin datos.")
+            
             mensaje = "\n".join(lines)
 
-        # Enviar por Telegram
+        # --- Enviar por Telegram (si está configurado) ---
         if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
             payload = {
@@ -101,9 +190,13 @@ def generar_reporte():
             }
             response = requests.post(url, json=payload)
             response.raise_for_status()
-            logger.info("✅ Reporte enviado correctamente")
+            logger.info("✅ Reporte enviado correctamente a Telegram")
         else:
-            logger.warning("⚠️ Faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID, no se envió el reporte")
+            # Si no hay token, imprimimos en consola para pruebas
+            print("\n" + "="*60)
+            print(mensaje)
+            print("="*60 + "\n")
+            logger.warning("⚠️ Faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID, reporte impreso en consola.")
 
     except Exception as e:
         logger.error(f"❌ Error generando/enviando reporte: {e}", exc_info=True)
