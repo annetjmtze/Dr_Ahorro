@@ -13,7 +13,8 @@ from data.database import (
     get_resumen, init_db, save_precio, get_last_precios,
     validar_coherencia_producto, validar_precio, normalizar_farmacia,
     get_connection, get_precios,
-    get_usuario, save_zona_texto, save_zona_gps, clear_zona
+    get_usuario, save_zona_texto, save_zona_gps, clear_zona,
+    guardar_analisis  # ✅ IMPORTAR LA NUEVA FUNCIÓN
 )
 from bot.counter import increment_and_check_limit, is_limit_reached, LIMITE_DIARIO, LIMITE_NOTIFICACION
 from bot.telegram_notifier import send_telegram_message
@@ -158,29 +159,7 @@ def limpiar_contexto_expirado():
     for k in expirados:
         del user_context[k]
 
-# ✅ NUEVO: Función para guardar el análisis en la tabla
-def guardar_analisis(usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp):
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        if IS_PROD:
-            cursor.execute("""
-                INSERT INTO analisis_busquedas 
-                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp))
-        else:
-            cursor.execute("""
-                INSERT INTO analisis_busquedas 
-                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp))
-        conn.commit()
-        logging.info(f"Análisis guardado para {usuario}: {medicamento}, urgente={urgente}")
-    except Exception as e:
-        logging.error(f"Error guardando análisis: {e}")
-    finally:
-        conn.close()
+# ❌ ELIMINADA la función local guardar_analisis (ahora se importa desde database)
 
 # ------------------------------------------------------------
 #  FORMATEO DE RESPUESTA
@@ -277,7 +256,7 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, z
     return "\n".join(lines)
 
 # ------------------------------------------------------------
-#  WEBHOOK PRINCIPAL (CORREGIDO CON INTEGRACIÓN DE COSTO-BENEFICIO)
+#  WEBHOOK PRINCIPAL (CORREGIDO CON INTEGRACIÓN DE COSTO-BENEFICIO Y GUARDADO COMPLETO)
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():
@@ -468,21 +447,11 @@ def whatsapp_webhook():
         # ------------------------------------------------------------
 
         # Preparar datos para el motor
-        # farmacias_bd: lista de dicts con 'nombre' y 'precio'
         farmacias_bd = [{"nombre": p["farmacia"], "precio": p["precio"]} for p in farmacias]
-
-        # delivery_opts: lista de dicts con 'nombre' y 'precio_total' (incluye envío)
-        # Asumimos un costo de envío fijo de $30 MXN (puede ajustarse)
         ENVIO_ESTIMADO = 30.0
         delivery_opts = [{"nombre": p["farmacia"], "precio_total": p["precio"] + ENVIO_ESTIMADO} for p in delivery]
-
-        # farmacias_mapa: extraer del screenshot. Por ahora, lista vacía.
-        # En el futuro, se puede implementar OCR para extraer los nombres.
         farmacias_mapa = []  # ⚠️ Pendiente de implementar con OCR
-        # En whatsapp_handler.py, antes de la línea 484
-        logging.info(f"📊 farmacias_bd: {farmacias_bd}")
-        logging.info(f"📊 delivery_opts: {delivery_opts}")
-        logging.info(f"📊 farmacias_mapa: {farmacias_mapa}")
+
         # Ejecutar cálculo de recomendación
         recomendacion = calcular_recomendacion(
             farmacias_bd=farmacias_bd,
@@ -491,21 +460,8 @@ def whatsapp_webhook():
             urgente=urgente
         )
 
-        # Guardar el análisis en la tabla
-        try:
-            guardar_analisis(
-                usuario=sender,
-                medicamento=nombre_generico or nombre_ingresado,
-                urgente=urgente,
-                opcion_ganadora=recomendacion.get("opcion_ganadora"),
-                ahorro_vs_delivery=recomendacion.get("ahorro_vs_delivery", 0.0),
-                timestamp=datetime.now(timezone.utc)
-            )
-        except Exception as e:
-            logging.error(f"Error guardando análisis: {e}")
-
         # ------------------------------------------------------------
-        #  OBTENER ZONA Y MAPA
+        #  OBTENER ZONA Y MAPA (ahora antes de guardar para tener zona_texto)
         # ------------------------------------------------------------
         usuario_actual = get_usuario(sender)
         if usuario_actual:
@@ -582,11 +538,50 @@ def whatsapp_webhook():
             logging.info("ℹ️ No se pudo obtener mapa (falló o no hay caché válido)")
 
         # ------------------------------------------------------------
+        #  EXTRAER PRECIOS PARA GUARDAR EN LA TABLA
+        # ------------------------------------------------------------
+        # Precio más barato de farmacia (si existe)
+        precio_fisica = farmacias[0]['precio'] if farmacias else None
+        # Precio más barato de delivery (sin envío, el precio base)
+        precio_rappi = delivery[0]['precio'] if delivery else None
+
+        # Determinar opción recomendada y precio recomendado
+        # Según la lógica del motor, la opción ganadora puede ser 'farmacia', 'delivery' o 'mapa'
+        opcion_ganadora = recomendacion.get("opcion_ganadora")
+        ahorro_calculado = recomendacion.get("ahorro_vs_delivery", 0.0)
+        opcion_recomendada = opcion_ganadora  # Asumimos que la ganadora es la recomendada
+        precio_recomendado = None
+        if opcion_recomendada == 'farmacia' and precio_fisica is not None:
+            precio_recomendado = precio_fisica
+        elif opcion_recomendada == 'delivery' and precio_rappi is not None:
+            precio_recomendado = precio_rappi
+        # Si es 'mapa', no tenemos precio aún
+
+        # ------------------------------------------------------------
+        #  GUARDAR ANÁLISIS (con todos los datos)
+        # ------------------------------------------------------------
+        try:
+            guardar_analisis(
+                usuario=sender,
+                medicamento=nombre_generico or nombre_ingresado,
+                urgente=urgente,
+                opcion_ganadora=opcion_ganadora,
+                ahorro_calculado=ahorro_calculado,
+                zona=zona_texto,
+                opcion_recomendada=opcion_recomendada,
+                precio_recomendado=precio_recomendado,
+                precio_rappi=precio_rappi,
+                precio_fisica=precio_fisica,
+                fecha=datetime.now(timezone.utc)
+            )
+        except Exception as e:
+            logging.error(f"Error guardando análisis en BD: {e}")
+
+        # ------------------------------------------------------------
         #  CONSTRUIR RESPUESTA DE TEXTO (con recomendación al final)
         # ------------------------------------------------------------
         if farmacias or delivery:
             texto_ranking = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
-            # ✅ NUEVO: Añadir la recomendación al final
             texto_respuesta = texto_ranking + "\n\n" + recomendacion["texto_recomendacion"]
             user_context[sender] = {
                 'medicamento_buscado': nombre_ingresado,
@@ -611,7 +606,6 @@ def whatsapp_webhook():
             )
             if zona_texto:
                 texto_respuesta += f"\n📍 Buscando en {zona_texto} · Escribe /zona para cambiar."
-            # ✅ NUEVO: También agregar recomendación en caso de no encontrar precios
             texto_respuesta += "\n\n" + recomendacion["texto_recomendacion"]
             user_context[sender] = {
                 'medicamento_buscado': nombre_ingresado,

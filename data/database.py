@@ -12,7 +12,7 @@ from difflib import SequenceMatcher
 from urllib.parse import urlparse
 
 # ============================================================
-# CONFIGURACIÓN DE LOGGING (FORZAR SALIDA A STDOUT)
+# CONFIGURACIÓN DE LOGGING
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -42,7 +42,7 @@ def get_connection():
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
-    
+
     # --- Tabla de precios (existente) ---
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS precios (
@@ -62,7 +62,7 @@ def init_db():
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_medicamento ON precios(medicamento)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_fecha ON precios(fecha)')
-    
+
     # --- Tabla de rangos (existente) ---
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS rangos_precios (
@@ -91,7 +91,7 @@ def init_db():
             'INSERT OR IGNORE INTO rangos_precios (medicamento_generico, precio_min, precio_max) VALUES (?, ?, ?)',
             rangos_default
         )
-    
+
     # --- Tabla de usuarios (existente) ---
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -108,9 +108,9 @@ def init_db():
         )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_whatsapp ON usuarios(whatsapp_number)')
-    
+
     # ------------------------------------------------------------
-    # ✅ NUEVA TABLA: analisis_busquedas (para reporte del Día 4)
+    # TABLA analisis_busquedas (con todas las columnas)
     # ------------------------------------------------------------
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS analisis_busquedas (
@@ -119,19 +119,69 @@ def init_db():
             medicamento         TEXT NOT NULL,
             urgente             BOOLEAN DEFAULT FALSE,
             opcion_ganadora     TEXT,
-            ahorro_vs_delivery  REAL,
-            timestamp           TEXT NOT NULL
+            ahorro_calculado    REAL,
+            zona                TEXT,
+            opcion_recomendada  TEXT,
+            precio_recomendado  REAL,
+            precio_rappi        REAL,
+            precio_fisica       REAL,
+            fecha               TEXT NOT NULL
         )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_analisis_usuario ON analisis_busquedas(usuario)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_analisis_timestamp ON analisis_busquedas(timestamp)')
-    
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_analisis_fecha ON analisis_busquedas(fecha)')
+
+    # ------------------------------------------------------------
+    # MIGRACIONES (renombrar timestamp a fecha, agregar columnas)
+    # ------------------------------------------------------------
+    if IS_PROD:
+        cursor.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='analisis_busquedas' AND column_name='timestamp'
+        """)
+        has_timestamp = cursor.fetchone() is not None
+        if has_timestamp:
+            cursor.execute("ALTER TABLE analisis_busquedas RENAME COLUMN timestamp TO fecha")
+            logger.info("✅ Columna 'timestamp' renombrada a 'fecha' (PostgreSQL)")
+    else:
+        try:
+            cursor.execute("ALTER TABLE analisis_busquedas RENAME COLUMN timestamp TO fecha")
+            logger.info("✅ Columna 'timestamp' renombrada a 'fecha' (SQLite)")
+        except Exception as e:
+            if "no such column" not in str(e).lower():
+                logger.warning(f"Error al renombrar columna: {e}")
+
+    if IS_PROD:
+        for col, tipo in [
+            ("zona", "TEXT"),
+            ("opcion_recomendada", "TEXT"),
+            ("precio_recomendado", "REAL"),
+            ("precio_rappi", "REAL"),
+            ("precio_fisica", "REAL"),
+            ("ahorro_calculado", "REAL"),
+        ]:
+            cursor.execute(f"ALTER TABLE analisis_busquedas ADD COLUMN IF NOT EXISTS {col} {tipo}")
+    else:
+        for col, tipo in [
+            ("zona", "TEXT"),
+            ("opcion_recomendada", "TEXT"),
+            ("precio_recomendado", "REAL"),
+            ("precio_rappi", "REAL"),
+            ("precio_fisica", "REAL"),
+            ("ahorro_calculado", "REAL"),
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE analisis_busquedas ADD COLUMN {col} {tipo}")
+            except Exception:
+                pass
+
     conn.commit()
     conn.close()
-    logger.info("📦 Base de datos inicializada correctamente (tablas precios, rangos, usuarios, analisis_busquedas)")
+    logger.info("📦 Base de datos inicializada correctamente")
 
 # ============================================================
-# FUNCIONES DE NORMALIZACIÓN (ya existentes)
+# FUNCIONES DE NORMALIZACIÓN
 # ============================================================
 def normalizar_texto(texto: str) -> str:
     texto = texto.lower().strip()
@@ -209,7 +259,7 @@ def es_url_valida(url: str) -> bool:
         return False
 
 # ============================================================
-# FUNCIONES DE PRECIOS (ya existentes, sin cambios)
+# FUNCIONES DE PRECIOS
 # ============================================================
 def save_precio(data: Dict[str, Any]):
     required = ['medicamento', 'farmacia', 'precio', 'fuente', 'fecha']
@@ -342,6 +392,7 @@ def get_precios(medicamento: str, horas: int = 24) -> List[Dict[str, Any]]:
     return final
 
 def get_resumen(medicamento: str) -> List[Dict[str, Any]]:
+    """Alias de get_precios con horizonte de 24 horas."""
     return get_precios(medicamento, horas=24)
 
 def get_last_precios(medicamento: str, limit: int = 5) -> List[Dict[str, Any]]:
@@ -402,14 +453,9 @@ def contar_por_fuente():
     return resultado
 
 # ============================================================
-# FUNCIONES PARA EL ONBOARDING DE USUARIOS (existentes)
+# FUNCIONES DE USUARIO
 # ============================================================
-
 def get_usuario(whatsapp_number: str) -> Optional[Dict[str, Any]]:
-    """
-    Obtiene el registro del usuario por su número de WhatsApp.
-    Retorna un diccionario con los datos o None si no existe.
-    """
     conn = get_connection()
     cursor = conn.cursor()
     if IS_PROD:
@@ -429,10 +475,6 @@ def get_usuario(whatsapp_number: str) -> Optional[Dict[str, Any]]:
     return dict(row)
 
 def _save_usuario(whatsapp_number: str, data: Dict[str, Any]):
-    """
-    Función interna para insertar o actualizar un usuario.
-    data puede contener: colonia, codigo_postal, ciudad, latitud, longitud, zona_verificada
-    """
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -499,9 +541,6 @@ def save_zona_texto(whatsapp_number: str, colonia: str, cp: Optional[str] = None
     logger.info(f"✅ Zona guardada para {whatsapp_number}: colonia='{colonia}', CP='{cp}', ciudad='{ciudad}'")
 
 def save_zona_gps(whatsapp_number: str, lat: float, lon: float):
-    """
-    Guarda o actualiza la zona del usuario a partir de coordenadas GPS.
-    """
     data = {
         'latitud': lat,
         'longitud': lon,
@@ -518,9 +557,6 @@ def actualizar_zona(
     lat: Optional[float] = None,
     lon: Optional[float] = None
 ):
-    """
-    Función genérica para actualizar la zona del usuario con cualquier combinación de datos.
-    """
     data = {}
     if colonia is not None:
         data['colonia'] = colonia.strip()
@@ -539,10 +575,6 @@ def actualizar_zona(
     logger.info(f"🔄 Zona actualizada para {whatsapp_number}: {data}")
 
 def clear_zona(whatsapp_number: str):
-    """
-    Elimina la zona guardada del usuario (colonia, CP, latitud, longitud)
-    y marca zona_verificada = False. Útil para el comando /zona.
-    """
     data = {
         'colonia': None,
         'codigo_postal': None,
@@ -555,24 +587,24 @@ def clear_zona(whatsapp_number: str):
     logger.info(f"🧹 Zona limpiada para {whatsapp_number}")
 
 # ============================================================
-# ✅ NUEVA FUNCIÓN: GUARDAR ANÁLISIS DE COSTO‑BENEFICIO
+# FUNCIÓN GUARDAR ANÁLISIS (ACTUALIZADA)
 # ============================================================
-
 def guardar_analisis(
     usuario: str,
     medicamento: str,
     urgente: bool,
     opcion_ganadora: Optional[str],
-    ahorro_vs_delivery: float,
-    timestamp: Optional[datetime] = None
+    ahorro_calculado: float,
+    zona: Optional[str] = None,
+    opcion_recomendada: Optional[str] = None,
+    precio_recomendado: Optional[float] = None,
+    precio_rappi: Optional[float] = None,
+    precio_fisica: Optional[float] = None,
+    fecha: Optional[datetime] = None
 ):
-    """
-    Inserta un registro en la tabla analisis_busquedas.
-    Si timestamp es None, usa datetime.now(timezone.utc).
-    """
-    if timestamp is None:
-        timestamp = datetime.now(timezone.utc)
-    timestamp_str = timestamp.isoformat()
+    if fecha is None:
+        fecha = datetime.now(timezone.utc)
+    fecha_str = fecha.isoformat()
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -581,22 +613,26 @@ def guardar_analisis(
             cursor.execute(
                 """
                 INSERT INTO analisis_busquedas
-                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_calculado,
+                 zona, opcion_recomendada, precio_recomendado, precio_rappi, precio_fisica, fecha)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp_str)
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_calculado,
+                 zona, opcion_recomendada, precio_recomendado, precio_rappi, precio_fisica, fecha_str)
             )
         else:
             cursor.execute(
                 """
                 INSERT INTO analisis_busquedas
-                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_calculado,
+                 zona, opcion_recomendada, precio_recomendado, precio_rappi, precio_fisica, fecha)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (usuario, medicamento, urgente, opcion_ganadora, ahorro_vs_delivery, timestamp_str)
+                (usuario, medicamento, urgente, opcion_ganadora, ahorro_calculado,
+                 zona, opcion_recomendada, precio_recomendado, precio_rappi, precio_fisica, fecha_str)
             )
         conn.commit()
-        logger.info(f"✅ Análisis guardado para {usuario}: {medicamento}, urgente={urgente}, ganadora={opcion_ganadora}")
+        logger.info(f"✅ Análisis guardado para {usuario}: {medicamento}, urgente={urgente}")
     except Exception as e:
         logger.error(f"❌ Error guardando análisis en BD: {e}")
     finally:
