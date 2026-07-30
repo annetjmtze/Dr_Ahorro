@@ -19,11 +19,16 @@ except ImportError as e:
 
 from data.database import init_db, get_connection, contar_por_fuente, count_precios
 
+# ════════════════════════════════════════════════════════════════
+# ✅ NUEVA IMPORTACIÓN PARA EL REPORTE DIARIO
+# ════════════════════════════════════════════════════════════════
+from data.analytics.reporte_diario import generar_reporte
+
 # ── Logging (FORZAR SALIDA A STDOUT) ──
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    stream=sys.stdout  # <-- Esto hace que Railway capture los logs
+    stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
 
@@ -166,10 +171,23 @@ if __name__ == "__main__":
         'interval',
         hours=6,
         id='pipeline_6h',
-        next_run_time=datetime.now()  # se ejecutará ahora mismo (ya lo hicimos, pero si no, lo haría)
+        next_run_time=datetime.now()  # ya se ejecutó, pero si no, lo haría
     )
     logger.info("⏰ Pipeline programado cada 6 horas")
-    
+
+    # ────────────────────────────────────────────────────────────
+    # ✅ NUEVO JOB: Reporte diario a las 9 PM (hora CDMX)
+    # ────────────────────────────────────────────────────────────
+    scheduler.add_job(
+        generar_reporte,
+        'cron',
+        hour=21,
+        minute=0,
+        timezone='America/Mexico_City',
+        id='reporte_diario'
+    )
+    logger.info("⏰ Reporte diario programado a las 21:00 (hora CDMX)")
+
     try:
         logger.info("🚀 Scheduler iniciado. Presiona Ctrl+C para detener.")
         scheduler.start()
