@@ -52,6 +52,22 @@ class UberEatsAgent:
             pass
         return False
 
+    async def _is_valid_mexico_url(self, url: str) -> bool:
+        """Verifica que la URL sea de México y no contenga direcciones de EE.UU."""
+        if not url:
+            return False
+        # Debe contener /mx/ en la URL
+        if '/mx/' not in url:
+            return False
+        # Palabras prohibidas que indican direcciones de EE.UU.
+        forbidden = ['berryessa', 'road', 'san', 'bay', 'california', 'avenue', 'street', 'drive', 'lane']
+        url_lower = url.lower()
+        for word in forbidden:
+            if word in url_lower:
+                logger.warning(f"URL contiene palabra prohibida '{word}': {url}")
+                return False
+        return True
+
     async def search_medication(self, medication: str) -> Optional[Dict[str, Any]]:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -72,15 +88,17 @@ class UberEatsAgent:
                 await asyncio.sleep(3)
                 await self._close_cookie_banner(page)
 
-                # ── Manejar dirección ──
+                # ── Manejar dirección (forzar CDMX o Uruapan) ──
                 try:
                     address_input = await page.wait_for_selector(
                         "input[placeholder*='dirección'], input[placeholder*='entrega'], input[name='searchTerm']",
                         timeout=5000
                     )
                     if address_input:
-                        logger.info("📍 Ingresando dirección: Uruapan")
-                        await address_input.fill("Uruapan")
+                        # Usar CDMX por defecto para asegurar ubicación en México
+                        direccion = os.getenv("UBER_EATS_DIRECCION", "Ciudad de México")
+                        logger.info(f"📍 Ingresando dirección: {direccion}")
+                        await address_input.fill(direccion)
                         await self._random_pause()
                         await address_input.press("Enter")
                         await asyncio.sleep(3)
@@ -103,10 +121,8 @@ class UberEatsAgent:
                 for el in raw_items:
                     try:
                         text = await el.inner_text()
-                        # Ignorar elementos de navegación o accesibilidad
                         if "Ir al contenido" in text or "Menu" in text or "Buscar" in text:
                             continue
-                        # Debe tener un nombre de tienda (OXXO, Farmacias, etc.) o un precio
                         if "OXXO" in text or "Farmacias" in text or "Costo de envío" in text or "MX$" in text or "$" in text:
                             items.append(el)
                     except:
@@ -172,6 +188,12 @@ class UberEatsAgent:
                             href = "https://www.ubereats.com" + href
                 except:
                     pass
+
+                # 🔥 VALIDACIÓN DE URL: asegurar que sea de México
+                if href and not await self._is_valid_mexico_url(href):
+                    logger.error(f"❌ URL inválida (no es de México o contiene direcciones de EE.UU.): {href}")
+                    await browser.close()
+                    return None
 
                 # ── Screenshot ──
                 screenshot_bytes = await page.screenshot(full_page=False)

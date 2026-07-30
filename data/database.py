@@ -128,31 +128,22 @@ def init_db():
             fecha               TEXT NOT NULL
         )
     ''')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_analisis_usuario ON analisis_busquedas(usuario)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_analisis_fecha ON analisis_busquedas(fecha)')
 
     # ------------------------------------------------------------
-    # MIGRACIONES (renombrar timestamp a fecha, agregar columnas)
+    # MIGRACIONES (antes de crear índices)
     # ------------------------------------------------------------
     if IS_PROD:
+        # PostgreSQL: renombrar timestamp a fecha si existe
         cursor.execute("""
             SELECT column_name 
             FROM information_schema.columns 
             WHERE table_name='analisis_busquedas' AND column_name='timestamp'
         """)
-        has_timestamp = cursor.fetchone() is not None
-        if has_timestamp:
+        if cursor.fetchone():
             cursor.execute("ALTER TABLE analisis_busquedas RENAME COLUMN timestamp TO fecha")
             logger.info("✅ Columna 'timestamp' renombrada a 'fecha' (PostgreSQL)")
-    else:
-        try:
-            cursor.execute("ALTER TABLE analisis_busquedas RENAME COLUMN timestamp TO fecha")
-            logger.info("✅ Columna 'timestamp' renombrada a 'fecha' (SQLite)")
-        except Exception as e:
-            if "no such column" not in str(e).lower():
-                logger.warning(f"Error al renombrar columna: {e}")
 
-    if IS_PROD:
+        # Agregar columnas nuevas si no existen
         for col, tipo in [
             ("zona", "TEXT"),
             ("opcion_recomendada", "TEXT"),
@@ -163,6 +154,15 @@ def init_db():
         ]:
             cursor.execute(f"ALTER TABLE analisis_busquedas ADD COLUMN IF NOT EXISTS {col} {tipo}")
     else:
+        # SQLite: renombrar timestamp a fecha si existe
+        try:
+            cursor.execute("ALTER TABLE analisis_busquedas RENAME COLUMN timestamp TO fecha")
+            logger.info("✅ Columna 'timestamp' renombrada a 'fecha' (SQLite)")
+        except Exception as e:
+            if "no such column" not in str(e).lower():
+                logger.warning(f"Error al renombrar columna: {e}")
+
+        # Agregar columnas nuevas (si ya existen, ignorar error)
         for col, tipo in [
             ("zona", "TEXT"),
             ("opcion_recomendada", "TEXT"),
@@ -174,11 +174,18 @@ def init_db():
             try:
                 cursor.execute(f"ALTER TABLE analisis_busquedas ADD COLUMN {col} {tipo}")
             except Exception:
-                pass
+                pass  # Columna ya existe
+
+    # ------------------------------------------------------------
+    # ÍNDICES (después de las migraciones)
+    # ------------------------------------------------------------
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_analisis_usuario ON analisis_busquedas(usuario)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_analisis_fecha ON analisis_busquedas(fecha)')
 
     conn.commit()
     conn.close()
     logger.info("📦 Base de datos inicializada correctamente")
+
 
 # ============================================================
 # FUNCIONES DE NORMALIZACIÓN
@@ -257,6 +264,7 @@ def es_url_valida(url: str) -> bool:
         return r.scheme in ('http', 'https') and bool(r.netloc)
     except:
         return False
+
 
 # ============================================================
 # FUNCIONES DE PRECIOS
@@ -340,6 +348,7 @@ def save_precio(data: Dict[str, Any]):
     conn.commit()
     conn.close()
 
+
 def get_precios(medicamento: str, horas: int = 24) -> List[Dict[str, Any]]:
     medicamento_norm = normalizar_texto(medicamento)
     logger.info(f"🔍 Buscando: {medicamento_norm}")
@@ -391,9 +400,11 @@ def get_precios(medicamento: str, horas: int = 24) -> List[Dict[str, Any]]:
     logger.info(f"✅ Resultados finales después de deduplicar: {len(final)}")
     return final
 
+
 def get_resumen(medicamento: str) -> List[Dict[str, Any]]:
     """Alias de get_precios con horizonte de 24 horas."""
     return get_precios(medicamento, horas=24)
+
 
 def get_last_precios(medicamento: str, limit: int = 5) -> List[Dict[str, Any]]:
     medicamento_norm = normalizar_texto(medicamento)
@@ -419,6 +430,7 @@ def get_last_precios(medicamento: str, limit: int = 5) -> List[Dict[str, Any]]:
     conn.close()
     return [dict(row) for row in rows]
 
+
 def count_precios() -> int:
     conn = get_connection()
     cursor = conn.cursor()
@@ -431,6 +443,7 @@ def count_precios() -> int:
         return row.get('count', 0) or 0
     else:
         return row[0] or 0
+
 
 def contar_por_fuente():
     conn = get_connection()
@@ -451,6 +464,7 @@ def contar_por_fuente():
             count = row[1]
         resultado[fuente] = count
     return resultado
+
 
 # ============================================================
 # FUNCIONES DE USUARIO
@@ -473,6 +487,7 @@ def get_usuario(whatsapp_number: str) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
     return dict(row)
+
 
 def _save_usuario(whatsapp_number: str, data: Dict[str, Any]):
     conn = get_connection()
@@ -529,6 +544,7 @@ def _save_usuario(whatsapp_number: str, data: Dict[str, Any]):
     conn.commit()
     conn.close()
 
+
 def save_zona_texto(whatsapp_number: str, colonia: str, cp: Optional[str] = None, ciudad: Optional[str] = None):
     data = {
         'colonia': colonia.strip() if colonia else None,
@@ -540,6 +556,7 @@ def save_zona_texto(whatsapp_number: str, colonia: str, cp: Optional[str] = None
     _save_usuario(whatsapp_number, data)
     logger.info(f"✅ Zona guardada para {whatsapp_number}: colonia='{colonia}', CP='{cp}', ciudad='{ciudad}'")
 
+
 def save_zona_gps(whatsapp_number: str, lat: float, lon: float):
     data = {
         'latitud': lat,
@@ -549,6 +566,7 @@ def save_zona_gps(whatsapp_number: str, lat: float, lon: float):
     }
     _save_usuario(whatsapp_number, data)
     logger.info(f"✅ GPS guardado para {whatsapp_number}: lat={lat}, lon={lon}")
+
 
 def actualizar_zona(
     whatsapp_number: str,
@@ -574,6 +592,7 @@ def actualizar_zona(
     _save_usuario(whatsapp_number, data)
     logger.info(f"🔄 Zona actualizada para {whatsapp_number}: {data}")
 
+
 def clear_zona(whatsapp_number: str):
     data = {
         'colonia': None,
@@ -585,6 +604,7 @@ def clear_zona(whatsapp_number: str):
     }
     _save_usuario(whatsapp_number, data)
     logger.info(f"🧹 Zona limpiada para {whatsapp_number}")
+
 
 # ============================================================
 # FUNCIÓN GUARDAR ANÁLISIS (ACTUALIZADA)
