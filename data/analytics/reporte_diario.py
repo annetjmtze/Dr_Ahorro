@@ -28,7 +28,7 @@ def generar_reporte():
         # 1. Medicamentos más buscados hoy
         if IS_PROD:
             cursor.execute("""
-                SELECT medicamento, COUNT(*) busquedas
+                SELECT medicamento, COUNT(*) AS busquedas
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = %s
                 GROUP BY medicamento
@@ -37,7 +37,7 @@ def generar_reporte():
             """, (hoy,))
         else:
             cursor.execute("""
-                SELECT medicamento, COUNT(*) busquedas
+                SELECT medicamento, COUNT(*) AS busquedas
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = ?
                 GROUP BY medicamento
@@ -49,54 +49,75 @@ def generar_reporte():
         # 2. Ahorro promedio
         if IS_PROD:
             cursor.execute("""
-                SELECT ROUND(AVG(ahorro_calculado)::numeric, 2)
+                SELECT ROUND(AVG(ahorro_calculado)::numeric, 2) AS ahorro_promedio
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = %s AND ahorro_calculado IS NOT NULL
             """, (hoy,))
         else:
             cursor.execute("""
-                SELECT ROUND(AVG(ahorro_calculado), 2)
+                SELECT ROUND(AVG(ahorro_calculado), 2) AS ahorro_promedio
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = ? AND ahorro_calculado IS NOT NULL
             """, (hoy,))
         ahorro_row = cursor.fetchone()
-        ahorro_avg = ahorro_row[0] if ahorro_row else None
+        # Manejo seguro: si es dict, usar clave; si es tuple, usar índice 0
+        if ahorro_row:
+            if isinstance(ahorro_row, dict):
+                ahorro_avg = ahorro_row.get('ahorro_promedio')
+            else:
+                ahorro_avg = ahorro_row[0]
+        else:
+            ahorro_avg = None
 
         # 3. Usuarios activos
         if IS_PROD:
             cursor.execute("""
-                SELECT COUNT(DISTINCT usuario)
+                SELECT COUNT(DISTINCT usuario) AS usuarios_activos
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = %s
             """, (hoy,))
         else:
             cursor.execute("""
-                SELECT COUNT(DISTINCT usuario)
+                SELECT COUNT(DISTINCT usuario) AS usuarios_activos
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = ?
             """, (hoy,))
-        usuarios_activos = cursor.fetchone()[0] or 0
+        usuarios_row = cursor.fetchone()
+        if usuarios_row:
+            if isinstance(usuarios_row, dict):
+                usuarios_activos = usuarios_row.get('usuarios_activos', 0)
+            else:
+                usuarios_activos = usuarios_row[0]
+        else:
+            usuarios_activos = 0
 
         # 4. Consultas urgentes
         if IS_PROD:
             cursor.execute("""
-                SELECT COUNT(*)
+                SELECT COUNT(*) AS urgentes
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = %s AND urgente = TRUE
             """, (hoy,))
         else:
             cursor.execute("""
-                SELECT COUNT(*)
+                SELECT COUNT(*) AS urgentes
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = ? AND urgente = 1
             """, (hoy,))
-        consultas_urgentes = cursor.fetchone()[0] or 0
+        urgentes_row = cursor.fetchone()
+        if urgentes_row:
+            if isinstance(urgentes_row, dict):
+                consultas_urgentes = urgentes_row.get('urgentes', 0)
+            else:
+                consultas_urgentes = urgentes_row[0]
+        else:
+            consultas_urgentes = 0
 
         # 5. Diferencia Rappi vs Física (por medicamento)
         if IS_PROD:
             cursor.execute("""
                 SELECT medicamento,
-                       ROUND(AVG(precio_rappi - precio_fisica)::numeric, 2) diferencia
+                       ROUND(AVG(precio_rappi - precio_fisica)::numeric, 2) AS diferencia
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = %s
                   AND precio_rappi IS NOT NULL
@@ -108,7 +129,7 @@ def generar_reporte():
         else:
             cursor.execute("""
                 SELECT medicamento,
-                       ROUND(AVG(precio_rappi - precio_fisica), 2) diferencia
+                       ROUND(AVG(precio_rappi - precio_fisica), 2) AS diferencia
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = ?
                   AND precio_rappi IS NOT NULL
@@ -122,7 +143,7 @@ def generar_reporte():
         # 6. Zona más activa
         if IS_PROD:
             cursor.execute("""
-                SELECT zona, COUNT(*) consultas
+                SELECT zona, COUNT(*) AS consultas
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = %s AND zona IS NOT NULL
                 GROUP BY zona
@@ -131,7 +152,7 @@ def generar_reporte():
             """, (hoy,))
         else:
             cursor.execute("""
-                SELECT zona, COUNT(*) consultas
+                SELECT zona, COUNT(*) AS consultas
                 FROM analisis_busquedas
                 WHERE DATE(fecha) = ? AND zona IS NOT NULL
                 GROUP BY zona
@@ -148,7 +169,13 @@ def generar_reporte():
             
             if top_meds:
                 lines.append("💊 *Medicamentos más buscados:*")
-                for med, count in top_meds:
+                for row in top_meds:
+                    if isinstance(row, dict):
+                        med = row.get('medicamento')
+                        count = row.get('busquedas')
+                    else:
+                        med = row[0]
+                        count = row[1]
                     lines.append(f"  • {med}: {count} búsquedas")
                 lines.append("")
             
@@ -165,7 +192,13 @@ def generar_reporte():
             
             if diff_meds:
                 lines.append("📈 *Diferencia Rappi vs Física (más caro):*")
-                for med, diff in diff_meds:
+                for row in diff_meds:
+                    if isinstance(row, dict):
+                        med = row.get('medicamento')
+                        diff = row.get('diferencia')
+                    else:
+                        med = row[0]
+                        diff = row[1]
                     lines.append(f"  • {med}: +${diff:.2f}")
                 lines.append("")
             else:
@@ -173,7 +206,12 @@ def generar_reporte():
                 lines.append("")
             
             if zona_row:
-                zona, consultas = zona_row
+                if isinstance(zona_row, dict):
+                    zona = zona_row.get('zona')
+                    consultas = zona_row.get('consultas')
+                else:
+                    zona = zona_row[0]
+                    consultas = zona_row[1]
                 lines.append(f"📍 *Zona más activa:* {zona} ({consultas} consultas)")
             else:
                 lines.append("📍 *Zona más activa:* Sin datos.")
