@@ -5,6 +5,7 @@ import json
 import re
 import random
 import logging
+import urllib.parse  # ✅ NUEVO
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
@@ -52,21 +53,23 @@ class UberEatsAgent:
             pass
         return False
 
+    # ✅ VALIDACIÓN MEJORADA (acepta URLs relativas)
     async def _is_valid_mexico_url(self, url: str) -> bool:
-        """Verifica que la URL sea de México y no contenga direcciones de EE.UU."""
+        """Verifica que la URL sea de México o sea relativa (se resolverá en /mx/)."""
         if not url:
             return False
-        # Debe contener /mx/ en la URL
-        if '/mx/' not in url:
+        # Si es relativa, asumimos que es válida (porque el dominio base es /mx/)
+        if url.startswith('/'):
+            return True
+        # Si es absoluta, debe contener /mx/ en la ruta
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path
+        if '/mx/' in path:
+            return True
+        # Si es https://www.ubereats.com sin /mx/ en la ruta, lo rechazamos
+        if 'ubereats.com' in parsed.netloc and not path.startswith('/mx/'):
             return False
-        # Palabras prohibidas que indican direcciones de EE.UU.
-        forbidden = ['berryessa', 'road', 'san', 'bay', 'california', 'avenue', 'street', 'drive', 'lane']
-        url_lower = url.lower()
-        for word in forbidden:
-            if word in url_lower:
-                logger.warning(f"URL contiene palabra prohibida '{word}': {url}")
-                return False
-        return True
+        return False
 
     async def search_medication(self, medication: str) -> Optional[Dict[str, Any]]:
         async with async_playwright() as p:
@@ -88,14 +91,13 @@ class UberEatsAgent:
                 await asyncio.sleep(3)
                 await self._close_cookie_banner(page)
 
-                # ── Manejar dirección (forzar CDMX o Uruapan) ──
+                # ── Manejar dirección (forzar CDMX) ──
                 try:
                     address_input = await page.wait_for_selector(
                         "input[placeholder*='dirección'], input[placeholder*='entrega'], input[name='searchTerm']",
                         timeout=5000
                     )
                     if address_input:
-                        # Usar CDMX por defecto para asegurar ubicación en México
                         direccion = os.getenv("UBER_EATS_DIRECCION", "Ciudad de México")
                         logger.info(f"📍 Ingresando dirección: {direccion}")
                         await address_input.fill(direccion)
@@ -116,7 +118,6 @@ class UberEatsAgent:
                 raw_items = await page.query_selector_all("div[data-testid='store-item'], div[data-testid='feed-item'], article, section, li")
                 logger.info(f"📦 Encontrados {len(raw_items)} elementos candidatos.")
 
-                # Filtrar: solo quedarnos con los que parecen ser tiendas
                 items = []
                 for el in raw_items:
                     try:
@@ -138,7 +139,6 @@ class UberEatsAgent:
                     logger.warning("No se encontraron items relevantes. HTML guardado.")
                     return None
 
-                # ── Tomar el primer item relevante ──
                 first_item = items[0]
                 item_text = await first_item.inner_text()
                 logger.info(f"📝 Primer item: {item_text[:200]}...")
@@ -178,22 +178,31 @@ class UberEatsAgent:
                 except:
                     pass
 
-                # ── Link ──
+                # ── Link (CORREGIDO CON /mx/ Y VALIDACIÓN) ──
                 href = None
                 try:
                     link_elem = await first_item.query_selector("a")
                     if link_elem:
                         href = await link_elem.get_attribute("href")
-                        if href and not href.startswith("http"):
-                            href = "https://www.ubereats.com" + href
+                        if href:
+                            # Si es relativo, lo convertimos a absoluto
+                            if href.startswith('/'):
+                                href = "https://www.ubereats.com" + href
+                            else:
+                                # Si es absoluto y no tiene /mx/, lo forzamos
+                                if 'ubereats.com' in href and '/mx/' not in href:
+                                    parsed = urllib.parse.urlparse(href)
+                                    if parsed.path.startswith('/'):
+                                        new_path = '/mx' + parsed.path
+                                    else:
+                                        new_path = '/mx/' + parsed.path
+                                    href = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, new_path, parsed.params, parsed.query, parsed.fragment))
+                                # Validamos que sea válida para México
+                                if not await self._is_valid_mexico_url(href):
+                                    logger.error(f"❌ URL inválida (no es de México): {href}")
+                                    href = None
                 except:
                     pass
-
-                # 🔥 VALIDACIÓN DE URL: asegurar que sea de México
-                if href and not await self._is_valid_mexico_url(href):
-                    logger.error(f"❌ URL inválida (no es de México o contiene direcciones de EE.UU.): {href}")
-                    await browser.close()
-                    return None
 
                 # ── Screenshot ──
                 screenshot_bytes = await page.screenshot(full_page=False)
