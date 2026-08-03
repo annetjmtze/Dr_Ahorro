@@ -14,13 +14,11 @@ from data.database import (
     validar_coherencia_producto, validar_precio, normalizar_farmacia,
     get_connection, get_precios,
     get_usuario, save_zona_texto, save_zona_gps, clear_zona,
-    guardar_analisis  # ✅ Importada desde database
+    guardar_analisis
 )
 from bot.counter import increment_and_check_limit, is_limit_reached, LIMITE_DIARIO, LIMITE_NOTIFICACION
 from bot.telegram_notifier import send_telegram_message
 from data.agents.maps_agent import obtener_mapa_para_zona_sync
-
-# ✅ Motor de costo‑beneficio
 from data.analytics.costo_beneficio import calcular_recomendacion
 
 load_dotenv()
@@ -34,7 +32,7 @@ logging.basicConfig(level=logging.INFO)
 
 user_context = {}
 CONTEXTO_EXPIRACION = timedelta(minutes=30)
-pending_zone = {}  # Número -> medicamento pendiente
+pending_zone = {}
 
 # ------------------------------------------------------------
 #  FUNCIONES AUXILIARES
@@ -111,31 +109,16 @@ def get_alternativas(principio_activo: str, limit: int = 5):
 
 def construir_mensaje_fallback(nombre_ingresado, nombre_generico, requiere_receta, alternativas, principio_activo):
     """
-    Mensaje cuando no hay precios recientes en la BD.
-    No revela arquitectura interna, solo da opciones útiles.
+    Mensaje simple y amigable cuando no hay precios.
+    NO recomienda otros medicamentos.
     """
     mensaje = ""
     if requiere_receta:
         mensaje += "⚠️ *Este medicamento requiere receta médica*\n\n"
     
     mensaje += f"💊 *{nombre_ingresado.title()}*\n"
-    mensaje += "No tenemos información de precios en este momento,\n"
-    mensaje += "pero te compartimos algunos medicamentos similares que\n"
-    mensaje += "puedes consultar en tu farmacia más cercana:\n\n"
-    
-    if alternativas:
-        for alt in alternativas[:5]:
-            mensaje += f"• {alt['nombre']}\n"
-            mensaje += f"  → {alt['farmacia']} — ${alt['precio']:.2f}\n"
-            if alt.get('url'):
-                mensaje += f"  👉 {alt['url']}\n"
-            mensaje += "\n"
-    else:
-        mensaje += "No tenemos registros de este medicamento,\n"
-        mensaje += "pero puedes preguntar por alternativas como:\n"
-        mensaje += "amoxicilina, ibuprofeno, paracetamol (según el caso).\n"
-        mensaje += "Consulta con tu farmacéutico.\n\n"
-    
+    mensaje += "No tenemos información de precios en este momento.\n"
+    mensaje += "Te sugerimos consultar en tu farmacia más cercana.\n\n"
     mensaje += "¿Quieres que te avisemos cuando tengamos precios?\n"
     mensaje += "Escribe *sí* y te notificaremos."
     return mensaje
@@ -147,18 +130,11 @@ def manejar_pregunta_seguimiento(pregunta: str, contexto: dict) -> str:
     elif pregunta == 'no':
         return "Entendido. ¿Hay algo más en lo que pueda ayudarte? Recuerda que puedes buscar otro medicamento."
     elif 'genérico' in pregunta or 'generico' in pregunta:
-        alternativas = contexto.get('alternativas', [])
-        if alternativas:
-            respuesta = "Estos son los genéricos equivalentes:\n"
-            for alt in alternativas[:5]:
-                respuesta += f"• {alt['nombre']} — ${alt['precio']:.2f} en {alt['farmacia']}\n"
-            return respuesta
-        else:
-            return "No encontramos genéricos en nuestra base, pero puedes consultar en tu farmacia más cercana. Pregunta por el principio activo."
+        return "Puedes preguntar por el principio activo en tu farmacia. El farmacéutico te orientará."
     elif 'tarda' in pregunta or 'cuánto' in pregunta:
         return "Normalmente actualizamos los precios en 24-48 horas. Te notificaremos en cuanto tengamos novedades. ¿Quieres que te avise?"
     else:
-        return None  # No es una pregunta de seguimiento válida
+        return None
 
 def limpiar_contexto_expirado():
     ahora = datetime.now(timezone.utc)
@@ -538,12 +514,12 @@ def whatsapp_webhook():
             logging.info("ℹ️ No se pudo obtener mapa (falló o no hay caché válido)")
 
         # ------------------------------------------------------------
-        #  EXTRAER PRECIOS Y NORMALIZAR AHORRO (CORRECCIÓN CLAVE)
+        #  EXTRAER PRECIOS Y NORMALIZAR AHORRO
         # ------------------------------------------------------------
         precio_fisica = farmacias[0]['precio'] if farmacias else None
         precio_rappi = delivery[0]['precio'] if delivery else None
 
-        # ✅ Normalizar ahorro_calculado para evitar NULL en reporte
+        # Normalizar ahorro_calculado para evitar NULL en reporte
         ahorro_calculado = recomendacion.get("ahorro_vs_delivery", 0.0)
         if ahorro_calculado is None:
             ahorro_calculado = 0.0
@@ -569,7 +545,7 @@ def whatsapp_webhook():
                 medicamento=nombre_generico or nombre_ingresado,
                 urgente=urgente,
                 opcion_ganadora=opcion_ganadora,
-                ahorro_calculado=ahorro_calculado,   # <-- Siempre float
+                ahorro_calculado=ahorro_calculado,
                 zona=zona_texto,
                 opcion_recomendada=opcion_recomendada,
                 precio_recomendado=precio_recomendado,
@@ -581,11 +557,35 @@ def whatsapp_webhook():
             logging.error(f"Error guardando análisis en BD: {e}")
 
         # ------------------------------------------------------------
-        #  CONSTRUIR RESPUESTA
+        #  CONSTRUIR RESPUESTA DE TEXTO (con recomendación amigable)
         # ------------------------------------------------------------
+        # --- Función para limpiar mensajes de arquitectura interna ---
+        def limpiar_mensaje_recomendacion(texto):
+            # Palabras/frases que revelan arquitectura
+            frases_prohibidas = [
+                "base de datos",
+                "mapa",
+                "farmacias en tu mapa",
+                "no encontramos farmacias en tu mapa",
+                "nuestra base de datos",
+                "BD",
+                "caché",
+                "OCR"
+            ]
+            for frase in frases_prohibidas:
+                if frase.lower() in texto.lower():
+                    # Reemplazar por un mensaje genérico amigable
+                    return "🔍 Te recomendamos consultar en tu farmacia más cercana o intentar con otro medicamento."
+            return texto
+
+        # Obtener la recomendación del motor y limpiarla
+        recomendacion_texto = recomendacion.get("texto_recomendacion", "")
+        recomendacion_limpia = limpiar_mensaje_recomendacion(recomendacion_texto)
+
+        # Si no hay farmacias ni delivery, usamos el mensaje fallback (ya simplificado)
         if farmacias or delivery:
             texto_ranking = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
-            texto_respuesta = texto_ranking + "\n\n" + recomendacion["texto_recomendacion"]
+            texto_respuesta = texto_ranking + "\n\n" + recomendacion_limpia
             user_context[sender] = {
                 'medicamento_buscado': nombre_ingresado,
                 'nombre_generico': nombre_generico,
@@ -595,27 +595,29 @@ def whatsapp_webhook():
                 'timestamp': datetime.now(timezone.utc)
             }
         else:
+            # No hay precios en absoluto: usamos el mensaje fallback simplificado
             principio_activo = obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresado)
             logging.info(f"🔍 Principio activo para búsqueda de alternativas: {principio_activo}")
-            alternativas = get_alternativas(principio_activo, limit=5)
-            logging.info(f"📦 Alternativas encontradas: {len(alternativas)}")
+            # Ya no buscamos alternativas, solo mensaje amigable
             requiere_receta = resultado.get('requiere_receta', False)
             texto_respuesta = construir_mensaje_fallback(
                 nombre_ingresado,
                 nombre_generico,
                 requiere_receta,
-                alternativas,
+                [],  # No pasamos alternativas
                 principio_activo
             )
             if zona_texto:
                 texto_respuesta += f"\n📍 Buscando en {zona_texto} · Escribe /zona para cambiar."
-            texto_respuesta += "\n\n" + recomendacion["texto_recomendacion"]
+            # Si hay recomendación del motor (aunque sea genérica), la añadimos
+            if recomendacion_limpia and "consultar en tu farmacia" not in recomendacion_limpia:
+                texto_respuesta += "\n\n" + recomendacion_limpia
             user_context[sender] = {
                 'medicamento_buscado': nombre_ingresado,
                 'nombre_generico': nombre_generico,
                 'principio_activo': principio_activo,
                 'requiere_receta': requiere_receta,
-                'alternativas': alternativas,
+                'alternativas': [],
                 'timestamp': datetime.now(timezone.utc)
             }
 
