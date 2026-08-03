@@ -110,12 +110,19 @@ def get_alternativas(principio_activo: str, limit: int = 5):
     return resultados
 
 def construir_mensaje_fallback(nombre_ingresado, nombre_generico, requiere_receta, alternativas, principio_activo):
+    """
+    Mensaje cuando no hay precios recientes en la BD.
+    No revela arquitectura interna, solo da opciones útiles.
+    """
     mensaje = ""
     if requiere_receta:
         mensaje += "⚠️ *Este medicamento requiere receta médica*\n\n"
+    
     mensaje += f"💊 *{nombre_ingresado.title()}*\n"
-    mensaje += "Aún no tenemos precios en tu zona,\n"
-    mensaje += "pero encontramos estos similares:\n\n"
+    mensaje += "No tenemos información de precios en este momento,\n"
+    mensaje += "pero te compartimos algunos medicamentos similares que\n"
+    mensaje += "puedes consultar en tu farmacia más cercana:\n\n"
+    
     if alternativas:
         for alt in alternativas[:5]:
             mensaje += f"• {alt['nombre']}\n"
@@ -124,12 +131,13 @@ def construir_mensaje_fallback(nombre_ingresado, nombre_generico, requiere_recet
                 mensaje += f"  👉 {alt['url']}\n"
             mensaje += "\n"
     else:
-        mensaje += "No encontramos alternativas en nuestra base,\n"
-        mensaje += "pero puedes preguntar por: amoxicilina, ibuprofeno, paracetamol (según el caso).\n"
+        mensaje += "No tenemos registros de este medicamento,\n"
+        mensaje += "pero puedes preguntar por alternativas como:\n"
+        mensaje += "amoxicilina, ibuprofeno, paracetamol (según el caso).\n"
         mensaje += "Consulta con tu farmacéutico.\n\n"
-    mensaje += "¿Quieres buscar el precio exacto\n"
-    mensaje += "de este medicamento? Escribe \"sí\"\n"
-    mensaje += "y te avisamos cuando lo tengamos."
+    
+    mensaje += "¿Quieres que te avisemos cuando tengamos precios?\n"
+    mensaje += "Escribe *sí* y te notificaremos."
     return mensaje
 
 def manejar_pregunta_seguimiento(pregunta: str, contexto: dict) -> str:
