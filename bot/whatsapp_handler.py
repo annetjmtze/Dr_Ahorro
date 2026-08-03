@@ -14,13 +14,13 @@ from data.database import (
     validar_coherencia_producto, validar_precio, normalizar_farmacia,
     get_connection, get_precios,
     get_usuario, save_zona_texto, save_zona_gps, clear_zona,
-    guardar_analisis  # ✅ IMPORTAR LA NUEVA FUNCIÓN
+    guardar_analisis  # ✅ Importada desde database
 )
 from bot.counter import increment_and_check_limit, is_limit_reached, LIMITE_DIARIO, LIMITE_NOTIFICACION
 from bot.telegram_notifier import send_telegram_message
 from data.agents.maps_agent import obtener_mapa_para_zona_sync
 
-# ✅ NUEVO: Importar el motor de costo‑beneficio
+# ✅ Motor de costo‑beneficio
 from data.analytics.costo_beneficio import calcular_recomendacion
 
 load_dotenv()
@@ -167,8 +167,6 @@ def limpiar_contexto_expirado():
     for k in expirados:
         del user_context[k]
 
-# ❌ ELIMINADA la función local guardar_analisis (ahora se importa desde database)
-
 # ------------------------------------------------------------
 #  FORMATEO DE RESPUESTA
 # ------------------------------------------------------------
@@ -264,7 +262,7 @@ def formatear_respuesta(nombre_generico: str, farmacias: list, delivery: list, z
     return "\n".join(lines)
 
 # ------------------------------------------------------------
-#  WEBHOOK PRINCIPAL (CORREGIDO CON INTEGRACIÓN DE COSTO-BENEFICIO Y GUARDADO COMPLETO)
+#  WEBHOOK PRINCIPAL
 # ------------------------------------------------------------
 @app.route("/webhook", methods=["POST"])
 def whatsapp_webhook():
@@ -300,7 +298,7 @@ def whatsapp_webhook():
                      "También puedes tocar el clip 📎 y compartir tu ubicación.")
             return Response(str(resp), mimetype="application/xml")
 
-        # ---------- DETECCIÓN DE CP (siempre, incluso si ya tiene zona) ----------
+        # ---------- DETECCIÓN DE CP (siempre) ----------
         es_cp = incoming_msg.isdigit() and len(incoming_msg) in [5, 6]
 
         if es_cp and sender not in pending_zone:
@@ -366,8 +364,6 @@ def whatsapp_webhook():
             return Response(str(resp), mimetype="application/xml")
 
         # ---------- PROCESAR BÚSQUEDA ----------
-
-        # Manejo de preguntas de seguimiento
         contexto = user_context.get(sender)
         if contexto:
             pregunta = incoming_msg.lower()
@@ -383,7 +379,7 @@ def whatsapp_webhook():
             else:
                 user_context.pop(sender, None)
 
-        # Normalizar medicamento (AHORA incluye 'urgente')
+        # Normalizar medicamento
         resultado = normalizer.normalizar(incoming_msg)
         if "error" in resultado:
             msg = resp.message()
@@ -394,7 +390,6 @@ def whatsapp_webhook():
         nombre_ingresado = resultado.get('nombre_ingresado', incoming_msg).lower()
         medicamento_ref = nombre_generico if nombre_generico else nombre_ingresado
 
-        # ✅ NUEVO: Obtener flag de urgencia
         urgente = resultado.get('urgente', False)
         logging.info(f"Urgencia detectada: {urgente}")
 
@@ -451,16 +446,13 @@ def whatsapp_webhook():
         delivery.sort(key=lambda x: x['precio'])
 
         # ------------------------------------------------------------
-        #  ✅ NUEVO: INTEGRACIÓN DEL MOTOR DE COSTO‑BENEFICIO
+        #  MOTOR DE COSTO‑BENEFICIO
         # ------------------------------------------------------------
-
-        # Preparar datos para el motor
         farmacias_bd = [{"nombre": p["farmacia"], "precio": p["precio"]} for p in farmacias]
         ENVIO_ESTIMADO = 30.0
         delivery_opts = [{"nombre": p["farmacia"], "precio_total": p["precio"] + ENVIO_ESTIMADO} for p in delivery]
-        farmacias_mapa = []  # ⚠️ Pendiente de implementar con OCR
+        farmacias_mapa = []  # Pendiente de implementar con OCR
 
-        # Ejecutar cálculo de recomendación
         recomendacion = calcular_recomendacion(
             farmacias_bd=farmacias_bd,
             delivery=delivery_opts,
@@ -469,7 +461,7 @@ def whatsapp_webhook():
         )
 
         # ------------------------------------------------------------
-        #  OBTENER ZONA Y MAPA (ahora antes de guardar para tener zona_texto)
+        #  OBTENER ZONA Y MAPA
         # ------------------------------------------------------------
         usuario_actual = get_usuario(sender)
         if usuario_actual:
@@ -546,27 +538,30 @@ def whatsapp_webhook():
             logging.info("ℹ️ No se pudo obtener mapa (falló o no hay caché válido)")
 
         # ------------------------------------------------------------
-        #  EXTRAER PRECIOS PARA GUARDAR EN LA TABLA
+        #  EXTRAER PRECIOS Y NORMALIZAR AHORRO (CORRECCIÓN CLAVE)
         # ------------------------------------------------------------
-        # Precio más barato de farmacia (si existe)
         precio_fisica = farmacias[0]['precio'] if farmacias else None
-        # Precio más barato de delivery (sin envío, el precio base)
         precio_rappi = delivery[0]['precio'] if delivery else None
 
-        # Determinar opción recomendada y precio recomendado
-        # Según la lógica del motor, la opción ganadora puede ser 'farmacia', 'delivery' o 'mapa'
-        opcion_ganadora = recomendacion.get("opcion_ganadora")
+        # ✅ Normalizar ahorro_calculado para evitar NULL en reporte
         ahorro_calculado = recomendacion.get("ahorro_vs_delivery", 0.0)
-        opcion_recomendada = opcion_ganadora  # Asumimos que la ganadora es la recomendada
+        if ahorro_calculado is None:
+            ahorro_calculado = 0.0
+        try:
+            ahorro_calculado = float(ahorro_calculado)
+        except (TypeError, ValueError):
+            ahorro_calculado = 0.0
+
+        opcion_ganadora = recomendacion.get("opcion_ganadora")
+        opcion_recomendada = opcion_ganadora
         precio_recomendado = None
         if opcion_recomendada == 'farmacia' and precio_fisica is not None:
             precio_recomendado = precio_fisica
         elif opcion_recomendada == 'delivery' and precio_rappi is not None:
             precio_recomendado = precio_rappi
-        # Si es 'mapa', no tenemos precio aún
 
         # ------------------------------------------------------------
-        #  GUARDAR ANÁLISIS (con todos los datos)
+        #  GUARDAR ANÁLISIS (con ahorro ya normalizado)
         # ------------------------------------------------------------
         try:
             guardar_analisis(
@@ -574,7 +569,7 @@ def whatsapp_webhook():
                 medicamento=nombre_generico or nombre_ingresado,
                 urgente=urgente,
                 opcion_ganadora=opcion_ganadora,
-                ahorro_calculado=ahorro_calculado,
+                ahorro_calculado=ahorro_calculado,   # <-- Siempre float
                 zona=zona_texto,
                 opcion_recomendada=opcion_recomendada,
                 precio_recomendado=precio_recomendado,
@@ -586,7 +581,7 @@ def whatsapp_webhook():
             logging.error(f"Error guardando análisis en BD: {e}")
 
         # ------------------------------------------------------------
-        #  CONSTRUIR RESPUESTA DE TEXTO (con recomendación al final)
+        #  CONSTRUIR RESPUESTA
         # ------------------------------------------------------------
         if farmacias or delivery:
             texto_ranking = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
