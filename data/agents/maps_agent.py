@@ -53,18 +53,18 @@ def get_r2_client():
     )
 
 # ============================================================
-# GENERACIÓN DE CLAVE PARA CACHÉ (CON _mx PARA FORZAR NUEVA)
+# GENERACIÓN DE CLAVE PARA CACHÉ (CON ZOOM FIJO)
 # ============================================================
 def generar_key_para_busqueda(zona: str = "", ciudad: str = "", lat: float = None, lon: float = None) -> str:
+    # 🔥 AÑADIMOS _zoom14 para forzar nueva generación con zoom fijo
     if lat is not None and lon is not None:
-        # 🔥 CAMBIO: añadimos _mx para forzar regeneración con URL correcta
-        base = f"gps_{lat:.6f}_{lon:.6f}_mx"
+        base = f"gps_{lat:.6f}_{lon:.6f}_zoom14"
     elif zona and ciudad:
-        base = f"{zona}_{ciudad}_mx".lower().strip()
+        base = f"{zona}_{ciudad}_zoom14".lower().strip()
     elif zona:
-        base = f"{zona}_mx".lower().strip()
+        base = f"{zona}_zoom14".lower().strip()
     else:
-        base = "unknown_mx"
+        base = "unknown_zoom14"
     base_limpia = base.replace(' ', '_').replace(',', '').replace('.', '')
     hash_obj = hashlib.md5(base.encode('utf-8')).hexdigest()[:8]
     return f"mapas/{base_limpia}_{hash_obj}.png"
@@ -121,7 +121,7 @@ def guardar_imagen_en_r2(zona: str = "", ciudad: str = "", lat: float = None, lo
         raise
 
 # ============================================================
-# CAPTURA DE MAPA CON PLAYWRIGHT (sin cambios, ya correcta)
+# CAPTURA DE MAPA CON PLAYWRIGHT (ZOOM FIJADO EN LA URL)
 # ============================================================
 async def capturar_mapa_farmacias(
     zona: str = None,
@@ -131,7 +131,6 @@ async def capturar_mapa_farmacias(
 ) -> Optional[bytes]:
     try:
         if lat is not None and lon is not None:
-            # GPS: usar solo coordenadas + México
             query = f"{lat},{lon} México"
         elif zona and ciudad:
             query = f"farmacias cerca de {zona}, {ciudad} México"
@@ -141,8 +140,9 @@ async def capturar_mapa_farmacias(
             logger.error("❌ No hay suficiente información para generar el mapa")
             return None
 
-        url = f"https://www.google.com/maps/search/{urllib.parse.quote(query)}"
-        logger.info(f"🗺️ Abriendo Google Maps: {url}")
+        # 🔥 FIJAMOS EL ZOOM EN 14 (z=14)
+        url = f"https://www.google.com/maps/search/{urllib.parse.quote(query)}?z=14"
+        logger.info(f"🗺️ Abriendo Google Maps con zoom fijo: {url}")
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
