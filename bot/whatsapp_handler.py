@@ -108,10 +108,6 @@ def get_alternativas(principio_activo: str, limit: int = 5):
     return resultados
 
 def construir_mensaje_fallback(nombre_ingresado, nombre_generico, requiere_receta, alternativas, principio_activo):
-    """
-    Mensaje simple y amigable cuando no hay precios.
-    NO recomienda otros medicamentos.
-    """
     mensaje = ""
     if requiere_receta:
         mensaje += "⚠️ *Este medicamento requiere receta médica*\n\n"
@@ -268,7 +264,8 @@ def whatsapp_webhook():
         if incoming_msg.lower() == "/zona":
             clear_zona(sender)
             user_context.pop(sender, None)
-            pending_zone.pop(sender, None)
+            # Guardamos un marcador especial para indicar que solo queremos actualizar zona
+            pending_zone[sender] = "__ZONA_ONLY__"
             msg = resp.message()
             msg.body("📍 Para actualizar tu zona, escribe tu colonia y ciudad (ej. 'Del Valle, CDMX') o tu código postal (5 dígitos).\n"
                      "También puedes tocar el clip 📎 y compartir tu ubicación.")
@@ -298,46 +295,81 @@ def whatsapp_webhook():
         if sender in pending_zone:
             medicamento_pendiente = pending_zone.pop(sender)
             zona_texto = None
+            medicamento_a_procesar = None
+            zona_guardada = False
 
             if is_gps:
                 save_zona_gps(sender, float(lat), float(lon))
                 zona_texto = f"GPS ({float(lat):.4f}, {float(lon):.4f})"
-                incoming_msg = medicamento_pendiente
+                zona_guardada = True
+                medicamento_a_procesar = medicamento_pendiente if medicamento_pendiente != "__ZONA_ONLY__" else None
             else:
                 texto = incoming_msg
                 if texto.isdigit() and len(texto) in [5, 6]:
                     save_zona_texto(sender, None, texto, None)
                     zona_texto = f"CP {texto}"
-                    incoming_msg = medicamento_pendiente
+                    zona_guardada = True
+                    medicamento_a_procesar = medicamento_pendiente if medicamento_pendiente != "__ZONA_ONLY__" else None
                 elif ',' in texto:
                     colonia, ciudad = texto.split(',', 1)
                     colonia = colonia.strip()
                     ciudad = ciudad.strip()
                     save_zona_texto(sender, colonia, None, ciudad)
                     zona_texto = f"{colonia}, {ciudad}"
-                    incoming_msg = medicamento_pendiente
+                    zona_guardada = True
+                    medicamento_a_procesar = medicamento_pendiente if medicamento_pendiente != "__ZONA_ONLY__" else None
                 else:
+                    # Si el usuario escribió algo que no es CP ni colonia+ciudad, lo tratamos como medicamento
                     save_zona_texto(sender, texto, None, None)
                     zona_texto = texto
-                    incoming_msg = medicamento_pendiente
+                    zona_guardada = True
+                    medicamento_a_procesar = medicamento_pendiente if medicamento_pendiente != "__ZONA_ONLY__" else None
 
-            user_context.pop(sender, None)
+            if zona_guardada:
+                # Si solo se actualizó zona (sin medicamento pendiente)
+                if medicamento_pendiente == "__ZONA_ONLY__":
+                    user_context.pop(sender, None)
+                    msg = resp.message()
+                    msg.body(f"✅ Zona guardada: {zona_texto}\n\nAhora escribe el nombre de un medicamento para buscar precios.")
+                    return Response(str(resp), mimetype="application/xml")
+                elif medicamento_a_procesar:
+                    # Si había un medicamento pendiente, confirmamos zona y procesamos
+                    user_context.pop(sender, None)
+                    # Enviamos confirmación y luego procesamos el medicamento
+                    msg = resp.message()
+                    msg.body(f"✅ Zona guardada: {zona_texto}\n\nBuscando precios para *{medicamento_a_procesar}*...")
+                    # Asignamos incoming_msg para que el flujo principal procese el medicamento
+                    incoming_msg = medicamento_a_procesar
+                    # No hacemos return, dejamos que el flujo continúe
+                else:
+                    # Caso raro: zona guardada pero sin medicamento
+                    user_context.pop(sender, None)
+                    msg = resp.message()
+                    msg.body(f"✅ Zona guardada: {zona_texto}\n\nAhora escribe el nombre de un medicamento para buscar precios.")
+                    return Response(str(resp), mimetype="application/xml")
+            else:
+                # No se pudo guardar la zona (error)
+                user_context.pop(sender, None)
+                msg = resp.message()
+                msg.body("❌ No pude entender tu ubicación. Intenta con formato 'Colonia, Ciudad' o código postal de 5 dígitos.")
+                return Response(str(resp), mimetype="application/xml")
 
-        # ---------- VERIFICAR ZONA ----------
-        usuario = get_usuario(sender)
-        tiene_zona = usuario and (
-            usuario.get('colonia') is not None or 
-            usuario.get('codigo_postal') is not None or 
-            usuario.get('latitud') is not None
-        )
+        # ---------- VERIFICAR ZONA (solo si no hay pending_zone) ----------
+        if not sender in pending_zone:  # Ya no debería estar en pending_zone
+            usuario = get_usuario(sender)
+            tiene_zona = usuario and (
+                usuario.get('colonia') is not None or 
+                usuario.get('codigo_postal') is not None or 
+                usuario.get('latitud') is not None
+            )
 
-        if not tiene_zona and sender not in pending_zone:
-            pending_zone[sender] = incoming_msg
-            msg = resp.message()
-            msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas?\n"
-                     "Escribe tu colonia y ciudad (ej. 'Del Valle, CDMX') o tu código postal (5 dígitos).\n"
-                     "También puedes tocar el clip 📎 y compartir tu ubicación.")
-            return Response(str(resp), mimetype="application/xml")
+            if not tiene_zona:
+                pending_zone[sender] = incoming_msg
+                msg = resp.message()
+                msg.body("📍 Para mostrarte las farmacias más cercanas, ¿en qué zona buscas?\n"
+                         "Escribe tu colonia y ciudad (ej. 'Del Valle, CDMX') o tu código postal (5 dígitos).\n"
+                         "También puedes tocar el clip 📎 y compartir tu ubicación.")
+                return Response(str(resp), mimetype="application/xml")
 
         # ---------- PROCESAR BÚSQUEDA ----------
         contexto = user_context.get(sender)
@@ -427,7 +459,7 @@ def whatsapp_webhook():
         farmacias_bd = [{"nombre": p["farmacia"], "precio": p["precio"]} for p in farmacias]
         ENVIO_ESTIMADO = 30.0
         delivery_opts = [{"nombre": p["farmacia"], "precio_total": p["precio"] + ENVIO_ESTIMADO} for p in delivery]
-        farmacias_mapa = []  # Pendiente de implementar con OCR
+        farmacias_mapa = []
 
         recomendacion = calcular_recomendacion(
             farmacias_bd=farmacias_bd,
@@ -519,7 +551,6 @@ def whatsapp_webhook():
         precio_fisica = farmacias[0]['precio'] if farmacias else None
         precio_rappi = delivery[0]['precio'] if delivery else None
 
-        # Normalizar ahorro_calculado para evitar NULL en reporte
         ahorro_calculado = recomendacion.get("ahorro_vs_delivery", 0.0)
         if ahorro_calculado is None:
             ahorro_calculado = 0.0
@@ -537,7 +568,7 @@ def whatsapp_webhook():
             precio_recomendado = precio_rappi
 
         # ------------------------------------------------------------
-        #  GUARDAR ANÁLISIS (con ahorro ya normalizado)
+        #  GUARDAR ANÁLISIS
         # ------------------------------------------------------------
         try:
             guardar_analisis(
@@ -557,11 +588,9 @@ def whatsapp_webhook():
             logging.error(f"Error guardando análisis en BD: {e}")
 
         # ------------------------------------------------------------
-        #  CONSTRUIR RESPUESTA DE TEXTO (con recomendación amigable)
+        #  CONSTRUIR RESPUESTA
         # ------------------------------------------------------------
-        # --- Función para limpiar mensajes de arquitectura interna ---
         def limpiar_mensaje_recomendacion(texto):
-            # Palabras/frases que revelan arquitectura
             frases_prohibidas = [
                 "base de datos",
                 "mapa",
@@ -574,15 +603,12 @@ def whatsapp_webhook():
             ]
             for frase in frases_prohibidas:
                 if frase.lower() in texto.lower():
-                    # Reemplazar por un mensaje genérico amigable
                     return "🔍 Te recomendamos consultar en tu farmacia más cercana o intentar con otro medicamento."
             return texto
 
-        # Obtener la recomendación del motor y limpiarla
         recomendacion_texto = recomendacion.get("texto_recomendacion", "")
         recomendacion_limpia = limpiar_mensaje_recomendacion(recomendacion_texto)
 
-        # Si no hay farmacias ni delivery, usamos el mensaje fallback (ya simplificado)
         if farmacias or delivery:
             texto_ranking = formatear_respuesta(nombre_generico, farmacias, delivery, zona_texto)
             texto_respuesta = texto_ranking + "\n\n" + recomendacion_limpia
@@ -595,21 +621,18 @@ def whatsapp_webhook():
                 'timestamp': datetime.now(timezone.utc)
             }
         else:
-            # No hay precios en absoluto: usamos el mensaje fallback simplificado
             principio_activo = obtener_principio_activo_mejorado(resultado, nombre_generico, nombre_ingresado)
             logging.info(f"🔍 Principio activo para búsqueda de alternativas: {principio_activo}")
-            # Ya no buscamos alternativas, solo mensaje amigable
             requiere_receta = resultado.get('requiere_receta', False)
             texto_respuesta = construir_mensaje_fallback(
                 nombre_ingresado,
                 nombre_generico,
                 requiere_receta,
-                [],  # No pasamos alternativas
+                [],
                 principio_activo
             )
             if zona_texto:
                 texto_respuesta += f"\n📍 Buscando en {zona_texto} · Escribe /zona para cambiar."
-            # Si hay recomendación del motor (aunque sea genérica), la añadimos
             if recomendacion_limpia and "consultar en tu farmacia" not in recomendacion_limpia:
                 texto_respuesta += "\n\n" + recomendacion_limpia
             user_context[sender] = {
